@@ -37,6 +37,11 @@
     film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M16 4v16M3 9h5M3 15h5M16 9h5M16 15h5"/>',
     file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>',
     bookmark: '<path d="M6 4h12v17l-6-4-6 4Z"/>',
+    volume: '<path d="M11 5 6 9H3v6h3l5 4Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>',
+    download: '<path d="M12 4v11M7 11l5 5 5-5M5 20h14"/>',
+    upload: '<path d="M12 16V5M7 9l5-5 5 5M5 20h14"/>',
+    users: '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.2A5 5 0 0 1 21 19"/>',
+    stop: '<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/>',
   };
   const svg = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
   const paintIcons = (root) => root.querySelectorAll('[data-ic]').forEach((e) => { e.innerHTML = svg(e.dataset.ic); });
@@ -50,12 +55,12 @@
     'pName', 'pPlan', 'pmAvatar', 'pmName', 'pmPlan', 'menuBtn', 'modeSeg', 'tempBtn', 'chat', 'messages', 'hero',
     'greeting', 'heroSlot', 'suggest', 'bottomSlot', 'composerWrap', 'chatForm', 'input', 'plusBtn', 'plusMenu',
     'effortBtn', 'effortLabel', 'effortMenu', 'micBtn', 'sendBtn', 'fileInput', 'ctx', 'toast', 'logoutLabel',
-    'libraryBtn', 'pluginsBtn', 'browseBtn', 'pluginsBadge', 'attachTray',
+    'libraryBtn', 'pluginsBtn', 'browseBtn', 'pluginsBadge', 'attachTray', 'enhanceBtn', 'slashMenu',
   ].forEach((id) => { els[id] = document.getElementById(id); });
 
   /* ---------- State ---------- */
   function load() {
-    const base = { sessions: [], saved: [], notes: [], plugins: [], profile: { name: 'Гост', plan: 'Безплатен', instructions: '' }, effort: 'medium', mode: 'chat', pinnedOpen: true };
+    const base = { sessions: [], saved: [], notes: [], plugins: [], profile: { name: 'Гост', plan: 'Безплатен', instructions: '' }, effort: 'medium', mode: 'chat', pinnedOpen: true, accent: 'silver' };
     try {
       const d = JSON.parse(localStorage.getItem(KEY));
       if (d && typeof d === 'object') {
@@ -148,7 +153,7 @@
   }
 
   function closeMenus() {
-    [els.ctx, els.profileMenu, els.effortMenu, els.plusMenu, els.brandMenu].forEach((m) => { m.hidden = true; });
+    [els.ctx, els.profileMenu, els.effortMenu, els.plusMenu, els.brandMenu, els.slashMenu].forEach((m) => { m.hidden = true; });
   }
 
   function toggleMenu(menu, build) {
@@ -162,6 +167,7 @@
   document.addEventListener('click', (e) => { if (!e.target.closest('.menu')) closeMenus(); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if (busy && !document.querySelector('.overlay') && els.slashMenu.hidden) stopGen();
       closeMenus();
       const ov = document.querySelector('.overlay');
       if (ov) ov.remove();
@@ -227,8 +233,23 @@
     let html = '';
     let list = null;
     const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
-    for (const line of t.split('\n')) {
+    const mdLines = t.split('\n');
+    for (let li = 0; li < mdLines.length; li += 1) {
+      const line = mdLines[li];
       let m;
+      if (/^\s*\|.*\|\s*$/.test(line) && li + 1 < mdLines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(mdLines[li + 1])) {
+        closeList();
+        const cells = (r) => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+        let tb = '<div class="tbl"><table><thead><tr>' + cells(line).map((c) => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+        li += 2;
+        while (li < mdLines.length && /^\s*\|.*\|\s*$/.test(mdLines[li])) {
+          tb += '<tr>' + cells(mdLines[li]).map((c) => `<td>${c}</td>`).join('') + '</tr>';
+          li += 1;
+        }
+        li -= 1;
+        html += tb + '</tbody></table></div>';
+        continue;
+      }
       if (/^\u0000\d+\u0000$/.test(line.trim())) { closeList(); html += line.trim(); }
       else if ((m = line.match(/^\s*[-*]\s+(.*)/))) { if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; } html += `<li>${m[1]}</li>`; }
       else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; } html += `<li>${m[1]}</li>`; }
@@ -281,6 +302,8 @@
     m.append(
       menuItem('pin', s.pinned ? 'Откачи' : 'Закачи', () => { s.pinned = !s.pinned; save(); renderSidebar(); }),
       menuItem('edit', 'Преименувай', () => renameModal(s)),
+      menuItem('download', 'Изтегли като .md', () => exportChat(s)),
+      menuItem('copy', 'Копирай чата', () => navigator.clipboard.writeText(chatMarkdown(s)).then(() => toast('Чатът е копиран'), () => toast('Неуспешно копиране'))),
       menuItem('trash', 'Изтрий', () => deleteModal(s), true)
     );
     m.hidden = false;
@@ -551,7 +574,12 @@
       im.title = 'Запази като картинка';
       im.innerHTML = svg('image');
       im.addEventListener('click', () => exportImage(text));
-      acts.append(cp, bm, im);
+      const sp = document.createElement('button');
+      sp.type = 'button';
+      sp.title = 'Прочети на глас';
+      sp.innerHTML = svg('volume');
+      sp.addEventListener('click', () => speak(text));
+      acts.append(cp, bm, im, sp);
       c.append(acts);
     }
     r.append(av, c);
@@ -562,8 +590,367 @@
     els.messages.innerHTML = '';
     const s = getActive();
     if (s) s.messages.forEach((m) => els.messages.appendChild(row(m.role, m.content, false, m.files)));
+    renderChips();
     scrollToBottom(false);
   }
+
+  /* ====================================================================
+     TitanAI extras: follow-up chips, read aloud, expert council, prompt
+     enhancer, slash commands, export & backup, accent colors, plans, shortcuts
+     ==================================================================== */
+  let councilOn = false;
+  let abortCtl = null;
+  let enhancing = false;
+  let lastEnhanced = '';
+  let undoDraft = '';
+  let installEvt = null;
+
+  const CHIPS = [
+    ['Опрости', 'Обясни последния си отговор по-просто, с по-кратки изречения.'],
+    ['По-кратко', 'Съкрати последния си отговор до най-важното.'],
+    ['Дай пример', 'Дай ми конкретен пример към последния ти отговор.'],
+    ['Продължи', 'Продължи оттам, където спря.'],
+    ['Друг вариант', 'Дай ми различен вариант на последния си отговор.'],
+    ['На английски', 'Преведи последния си отговор на английски.'],
+  ];
+
+  function renderChips() {
+    document.querySelectorAll('.chips').forEach((n) => n.remove());
+    if (busy) return;
+    const s = getActive();
+    if (!s || !s.messages.length || s.messages[s.messages.length - 1].role !== 'assistant') return;
+    const rows = els.messages.querySelectorAll('.row.ai');
+    const last = rows[rows.length - 1];
+    const c = last && last.querySelector('.content');
+    if (!c || c.classList.contains('err')) return;
+    const box = document.createElement('div');
+    box.className = 'chips';
+    CHIPS.forEach(([label, prompt]) => box.append(mkBtn(label, 'chip', () => send(prompt))));
+    c.append(box);
+  }
+
+  function stopGen() { if (abortCtl) abortCtl.abort(); }
+
+  function speak(text) {
+    if (!('speechSynthesis' in window)) { toast('Браузърът не поддържа четене на глас'); return; }
+    if (window.speechSynthesis.speaking) { window.speechSynthesis.cancel(); return; }
+    const clean = String(text).replace(/```[\s\S]*?```/g, ' кодов блок. ').replace(/[*#`_|]/g, '');
+    const u = new SpeechSynthesisUtterance(clean.slice(0, 4000));
+    u.lang = 'bg-BG';
+    window.speechSynthesis.speak(u);
+  }
+
+  /* ----- Expert council (3 experts argue, then TitanAI combines them) ----- */
+  function setCouncil(on) {
+    councilOn = !!on;
+    els.plusBtn.classList.toggle('on', councilOn);
+    els.input.placeholder = councilOn ? 'Попитай съвета от 3 експерта…' : 'Попитайте TitanAI';
+    if (on) toast('Съвет от експерти: Оптимист, Скептик и Прагматик ще отговорят');
+  }
+
+  async function askPersona(persona, message, history, signal) {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({ message, history, persona, stream: false }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Грешка при заявката (' + res.status + ')');
+    return String(data.reply || '').trim();
+  }
+
+  async function runCouncil(question, history, typing, signal) {
+    const label = typing.querySelector('.tlabel');
+    const experts = [['optimist', 'Оптимистът'], ['skeptic', 'Скептикът'], ['pragmatist', 'Прагматикът']];
+    let done = 0;
+    if (label) label.textContent = 'Съветът мисли… (0/3)';
+    const results = await Promise.all(experts.map(async ([id, name]) => {
+      try {
+        return { name, r: await askPersona(id, question, history.slice(-6), signal) };
+      } catch (e) {
+        return { name, r: '' };
+      } finally {
+        done += 1;
+        if (label) label.textContent = 'Съветът мисли… (' + done + '/3)';
+      }
+    }));
+    if (signal && signal.aborted) { const e = new Error('Спряно.'); e.name = 'AbortError'; throw e; }
+    const ok = results.filter((x) => x.r);
+    if (!ok.length) throw new Error('Експертите не успяха да отговорят (възможно е лимитът на безплатния модел да е изчерпан). Опитай пак след малко.');
+    if (label) label.textContent = 'TitanAI обобщава мненията…';
+    return 'Въпрос на потребителя: ' + question + '\n\nТри мнения от експертен съвет:\n' +
+      ok.map((x) => '### ' + x.name + '\n' + x.r).join('\n\n') +
+      '\n\nСъбери тези мнения в един ясен окончателен отговор: най-напред кратко кои са разногласията, ' +
+      'после твоята препоръка и конкретни следващи стъпки. Не цитирай мненията дословно.';
+  }
+
+  /* ----- Prompt enhancer ----- */
+  els.enhanceBtn.addEventListener('click', async () => {
+    if (enhancing || busy) return;
+    const draft = els.input.value.trim();
+    if (undoDraft && draft === lastEnhanced) {      // second click = undo
+      els.input.value = undoDraft;
+      undoDraft = '';
+      lastEnhanced = '';
+      autoResize(); updateSend();
+      toast('Върнах оригиналния текст');
+      return;
+    }
+    if (!draft) { toast('Първо напиши нещо в полето'); return; }
+    enhancing = true;
+    els.enhanceBtn.classList.add('busy');
+    try {
+      const better = await askPersona('enhancer', draft.slice(0, 3000), [], undefined);
+      if (!better) throw new Error('Не получих подобрен вариант');
+      undoDraft = els.input.value;
+      lastEnhanced = better.slice(0, 12000);
+      els.input.value = lastEnhanced;
+      autoResize(); updateSend();
+      toast('Промптът е подобрен ✨ — натисни пак за връщане');
+    } catch (e) {
+      toast(e.message || 'Неуспешно подобряване');
+    } finally {
+      enhancing = false;
+      els.enhanceBtn.classList.remove('busy');
+    }
+  });
+
+  /* ----- Slash commands ----- */
+  const SLASH = [
+    ['/съвет', 'users', 'Попитай съвет от 3 експерта', null],
+    ['/превод', 'book', 'Превод между български и английски', 'Преведи на английски и обясни нюансите: '],
+    ['/обобщи', 'library', 'Резюме в 5 ключови точки', 'Обобщи в 5 ключови точки: '],
+    ['/поправи', 'edit', 'Поправи правопис и стил', 'Поправи правописа и стила, без да променяш смисъла: '],
+    ['/просто', 'sparkle', 'Обясни като на 10-годишен', 'Обясни ми като на 10-годишен: '],
+    ['/имейл', 'mail', 'Професионален имейл', 'Напиши професионален имейл за: '],
+    ['/идеи', 'sparkle', '10 нестандартни идеи', 'Дай ми 10 нестандартни идеи за: '],
+    ['/план', 'clock', 'Стъпков план със срокове', 'Направи ми стъпков план със срокове за: '],
+    ['/код', 'code', 'Работещ код с коментари', 'Напиши работещ код с коментари за: '],
+    ['/таблица', 'panel', 'Отговор във вид на таблица', 'Представи в таблица (колоните ги избери ти): '],
+    ['/плюсове', 'sliders', 'Плюсове, минуси и препоръка', 'Дай ми плюсове, минуси и ясна препоръка за: '],
+  ];
+  let slashItems = [];
+  let slashIdx = 0;
+  const slashOpen = () => !els.slashMenu.hidden;
+  function slashHide() { els.slashMenu.hidden = true; slashItems = []; }
+
+  function slashPick(i) {
+    const it = slashItems[i];
+    slashHide();
+    if (!it) return;
+    if (it[3] === null) { els.input.value = ''; setCouncil(true); } else els.input.value = it[3];
+    autoResize(); updateSend();
+    els.input.focus();
+    els.input.setSelectionRange(els.input.value.length, els.input.value.length);
+  }
+
+  function slashPaint() {
+    els.slashMenu.innerHTML = '';
+    slashItems.forEach((it, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      if (i === slashIdx) b.style.background = '#2b2b30';
+      b.innerHTML = `<i class="ic">${svg(it[1])}</i><span class="grow"><b></b><small></small></span>`;
+      b.querySelector('b').textContent = it[0];
+      b.querySelector('small').textContent = it[2];
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', () => slashPick(i));
+      els.slashMenu.append(b);
+    });
+  }
+
+  function slashUpdate() {
+    const m = els.input.value.match(/^\/(\S*)$/);
+    if (!m) { if (slashOpen()) slashHide(); return; }
+    const q = ('/' + m[1]).toLowerCase();
+    slashItems = SLASH.filter((it) => it[0].startsWith(q));
+    if (!slashItems.length) { slashHide(); return; }
+    slashIdx = 0;
+    closeMenus();
+    slashPaint();
+    els.slashMenu.hidden = false;
+  }
+
+  function slashKey(e) {
+    if (!slashOpen()) return false;
+    if (e.key === 'ArrowDown') { slashIdx = (slashIdx + 1) % slashItems.length; slashPaint(); e.preventDefault(); return true; }
+    if (e.key === 'ArrowUp') { slashIdx = (slashIdx - 1 + slashItems.length) % slashItems.length; slashPaint(); e.preventDefault(); return true; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); slashPick(slashIdx); return true; }
+    if (e.key === 'Escape') { slashHide(); e.preventDefault(); return true; }
+    return false;
+  }
+
+  /* ----- Export chat / backup ----- */
+  function downloadBlob(name, text, type) {
+    const blob = new Blob([text], { type });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  }
+
+  const slug = (t) => String(t || 'chat').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'chat';
+
+  function chatMarkdown(sess) {
+    const out = ['# ' + sess.title, ''];
+    sess.messages.forEach((m) => {
+      out.push(m.role === 'user' ? '**Ти:**' : '**TitanAI:**', '', m.content);
+      (m.files || []).forEach((f) => out.push('', '_[файл: ' + f.name + ']_'));
+      out.push('');
+    });
+    return out.join('\n');
+  }
+
+  function exportChat(sess) {
+    downloadBlob('titanai-' + slug(sess.title) + '.md', chatMarkdown(sess), 'text/markdown;charset=utf-8');
+    toast('Чатът е изтеглен');
+  }
+
+  function backupData() {
+    downloadBlob('titanai-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(snapshot()), 'application/json');
+    toast('Резервното копие е изтеглено');
+  }
+
+  function restoreBackup() {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.json,application/json';
+    inp.addEventListener('change', () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        let d = null;
+        try { d = JSON.parse(String(r.result)); } catch (e) { d = null; }
+        if (!d || !Array.isArray(d.sessions)) { toast('Файлът не е валидно резервно копие'); return; }
+        modal('Възстановяване от копие', textBlock('<p>Чатовете, бележките и запазените отговори от копието ще бъдат <b>добавени</b> към текущите. Нищо не се изтрива.</p>'), {
+          ok: 'Добави',
+          onOk: () => {
+            const have = new Set(state.sessions.map((x) => x.id));
+            d.sessions.forEach((x) => {
+              if (x && typeof x.id === 'string' && Array.isArray(x.messages) && !have.has(x.id)) state.sessions.push(x);
+            });
+            (Array.isArray(d.saved) ? d.saved : []).forEach((x) => {
+              if (x && typeof x.text === 'string' && !state.saved.some((y) => y.text === x.text)) state.saved.push(x);
+            });
+            (Array.isArray(d.notes) ? d.notes : []).forEach((x) => { if (x && typeof x.text === 'string') addNote(x.text); });
+            save();
+            renderAll();
+            toast('Копието е добавено');
+          },
+        });
+      };
+      r.readAsText(f);
+    });
+    inp.click();
+  }
+
+  /* ----- Accent colors ----- */
+  const ACCENTS = {
+    silver: ['Сребро', '#f6f7f9', '#c4c7cd', '#9a9ea6', '#5b6cff'],
+    blue: ['Синьо', '#cfe6ff', '#7db2ff', '#4f8cff', '#4f8cff'],
+    purple: ['Лилаво', '#e6d2ff', '#b690ff', '#8a5cf0', '#8a5cf0'],
+    gold: ['Злато', '#fff0bd', '#f0c75a', '#c99a33', '#d9a93d'],
+    green: ['Зелено', '#c9f7d9', '#5fd896', '#2fa86a', '#2fa86a'],
+    rose: ['Розово', '#ffd6e5', '#ff7aa6', '#e0457c', '#e0457c'],
+  };
+
+  function applyAccent() {
+    const a = ACCENTS[state.accent] || ACCENTS.silver;
+    const st = document.documentElement.style;
+    st.setProperty('--grad', `linear-gradient(135deg, ${a[1]} 0%, ${a[2]} 50%, ${a[3]} 100%)`);
+    st.setProperty('--accent', a[4]);
+  }
+
+  function settingsExtras() {
+    const box = document.createElement('div');
+    box.style.marginTop = '14px';
+
+    const lab = document.createElement('label');
+    lab.textContent = 'Цвят на акцента';
+    const sw = document.createElement('div');
+    sw.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 16px';
+    Object.entries(ACCENTS).forEach(([id, a]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.title = a[0];
+      b.style.cssText = 'width:34px;height:34px;border-radius:50%;border:2px solid ' + (state.accent === id ? '#fff' : 'transparent') +
+        ';background:linear-gradient(135deg,' + a[1] + ',' + a[3] + ')';
+      b.addEventListener('click', () => {
+        state.accent = id;
+        save();
+        applyAccent();
+        sw.querySelectorAll('button').forEach((x) => { x.style.borderColor = 'transparent'; });
+        b.style.borderColor = '#fff';
+      });
+      sw.append(b);
+    });
+
+    const lab2 = document.createElement('label');
+    lab2.textContent = 'Резервно копие';
+    const r2 = document.createElement('div');
+    r2.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px';
+    r2.append(mkBtn('Изтегли копие', 'inline-btn', backupData), mkBtn('Възстанови от копие', 'inline-btn', restoreBackup));
+
+    box.append(lab, sw, lab2, r2);
+    if (installEvt) {
+      const r3 = document.createElement('div');
+      r3.style.marginTop = '14px';
+      r3.append(mkBtn('Инсталирай като приложение', 'inline-btn', async () => {
+        try { installEvt.prompt(); await installEvt.userChoice; } catch (e) { /* ignore */ }
+        installEvt = null;
+      }));
+      box.append(r3);
+    } else {
+      box.append(textBlock('<p class="hint" style="margin-top:14px">На телефон: меню на браузъра → „Добави към началния екран“, за да я ползваш като приложение.</p>'));
+    }
+    return box;
+  }
+
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
+
+  /* ----- Plans ----- */
+  function plansModal() {
+    const li = (arr) => arr.map(([t, d]) => `<li><span class="ok">✓</span> <b>${t}</b>${d ? ' — ' + d : ''}</li>`).join('');
+    const html =
+      '<div class="plans">' +
+      '<div class="plan"><h4>TitanAI Free</h4><div class="price">0 €</div><ul>' + li([
+        ['Чат с базови модели', ''],
+        ['Памет', 'до 10 бележки'],
+        ['Прикачени файлове', 'до 5 текстови'],
+        ['Закачени снимки', 'до 3, за анализи'],
+        ['Библиотека', 'до 50 запазени отговора'],
+        ['Мобилно приложение', 'пълен достъп'],
+      ]) + '</ul></div>' +
+      '<div class="plan pro"><h4>TitanAI Pro</h4><div class="price">7 € <small>/ месец</small></div><ul>' + li([
+        ['Приоритетна скорост', 'без задръствания'],
+        ['Генериране на промптове', 'за Midjourney / DALL-E'],
+        ['Анализ на видео', 'до 60 секунди'],
+        ['Големи прикачени файлове', 'без лимита от 300 KB'],
+        ['Неограничена памет', 'бележките'],
+        ['Export на картини', 'за социални мрежи'],
+        ['Приоритетна поддръжка', 'от екипа'],
+      ]) + '</ul></div></div>' +
+      '<p class="hint" style="margin-top:12px">Плащанията още не са свързани — Pro идва скоро.</p>';
+    const body = textBlock(html);
+    body.classList.add('scroll');
+    modal('Планове', body, { cancel: 'Затвори', wide: true });
+  }
+
+  /* ----- Shortcuts (by physical key, so they work on a Bulgarian layout too) ----- */
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyK') {
+      e.preventDefault();
+      if (els.searchBox.hidden) els.searchBtn.click(); else els.searchInput.focus();
+    } else if (e.altKey && e.code === 'KeyN') {
+      e.preventDefault();
+      startNewChat();
+    }
+  });
 
   function layout() {
     const s = getActive();
@@ -618,6 +1005,7 @@
     updateHero();
     updateProfile();
     updatePluginsBadge();
+    applyAccent();
   }
 
   /* ---------- Sessions ---------- */
@@ -778,7 +1166,13 @@
 
   /* ---------- Sending ---------- */
   function updateSend() {
-    els.sendBtn.disabled = busy || (!els.input.value.trim() && !pending.length);
+    els.sendBtn.disabled = busy ? false : (!els.input.value.trim() && !pending.length);
+    const m = busy ? 'stop' : 'send';
+    if (els.sendBtn.dataset.mode !== m) {
+      els.sendBtn.dataset.mode = m;
+      els.sendBtn.title = busy ? 'Спри' : 'Изпрати';
+      els.sendBtn.querySelector('.ic').innerHTML = svg(busy ? 'stop' : 'arrowup');
+    }
   }
 
   function autoResize() {
@@ -811,6 +1205,12 @@
     if (pending.some((a) => a.status === 'loading')) { toast('Изчакай файловете да се обработят'); return; }
     const ready = pending.filter((a) => a.status === 'ready');
     if (!text && !ready.length) return;
+
+    const useCouncil = councilOn && !!text && !ready.length && text.length <= 3000;
+    if (councilOn) {
+      if (!useCouncil) toast('Съветът работи само с текст до 3000 знака — отговарям обикновено');
+      setCouncil(false);
+    }
 
     // "запомни: ..." saves a note in Memory
     const rm = text.match(/^запомни(?:,?\s+че)?\s*[:,]?\s+([\s\S]{2,})$/i);
@@ -854,13 +1254,19 @@
     els.messages.appendChild(row('user', text, false, files));
     const typing = showTyping();
     const sid = s.id;
+    document.querySelectorAll('.chips').forEach((n) => n.remove());
+    abortCtl = new AbortController();
+    const signal = abortCtl.signal;
 
     try {
+      let apiText = text;
+      if (useCouncil) apiText = await runCouncil(text, history, typing, signal);
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
-          message: text,
+          message: apiText,
           attachments,
           history,
           mode: state.mode,
@@ -881,6 +1287,7 @@
         let contentEl = null;
         let raf = 0;
         let streamErr = '';
+        let stopped = false;
         const paint = () => {
           raf = 0;
           if (!contentEl) return;
@@ -920,11 +1327,13 @@
             }
           }
         } catch (e) {
-          streamErr = streamErr || 'връзката прекъсна';
+          if (signal.aborted) stopped = true;
+          else streamErr = streamErr || 'връзката прекъсна';
         }
         if (raf) cancelAnimationFrame(raf);
-        if (!reply) throw new Error(streamErr || 'Празен отговор от модела');
-        if (streamErr) reply += '\n\n(Отговорът беше прекъснат: ' + streamErr + ')';
+        if (!reply) throw new Error(stopped ? 'Спряно.' : (streamErr || 'Празен отговор от модела'));
+        if (stopped) reply += '\n\n(спряно)';
+        else if (streamErr) reply += '\n\n(Отговорът беше прекъснат: ' + streamErr + ')';
       } else {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || (res.status === 413 ? 'Файловете са твърде големи за изпращане' : 'Грешка при заявката (' + res.status + ')'));
@@ -942,26 +1351,30 @@
     } catch (err) {
       if (activeId === sid) {
         typing.remove();
-        els.messages.appendChild(row('assistant', 'Грешка: ' + err.message, true));
+        const aborted = err.name === 'AbortError' || err.message === 'Спряно.';
+        els.messages.appendChild(row('assistant', aborted ? 'Спряно.' : 'Грешка: ' + err.message, true));
       }
     } finally {
       busy = false;
+      abortCtl = null;
       updateSend();
       renderSidebar();
+      renderChips();
       scrollToBottom();
       els.input.focus();
     }
   }
 
   /* ---------- Composer events ---------- */
-  els.chatForm.addEventListener('submit', (e) => { e.preventDefault(); send(els.input.value); });
+  els.chatForm.addEventListener('submit', (e) => { e.preventDefault(); if (busy) { stopGen(); return; } send(els.input.value); });
   els.input.addEventListener('keydown', (e) => {
+    if (slashKey(e)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send(els.input.value);
     }
   });
-  els.input.addEventListener('input', () => { autoResize(); updateSend(); });
+  els.input.addEventListener('input', () => { autoResize(); updateSend(); slashUpdate(); });
 
   els.plusBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -969,6 +1382,7 @@
       els.plusMenu.innerHTML = '';
       els.plusMenu.append(
         menuItem('clip', 'Прикачи файл, снимка или видео', () => els.fileInput.click()),
+        menuItem('users', councilOn ? 'Изключи съвета от експерти' : 'Попитай съвет от 3 експерта', () => setCouncil(!councilOn)),
         menuItem('trash', 'Изчисти полето', () => {
           els.input.value = '';
           pending = [];
@@ -1165,6 +1579,14 @@
     ['designer', 'Дизайнер', 'Предлага палитри с цветове, стил, композиция и CSS код.', 'sparkle'],
     ['reviewer', 'Ревизор', 'Преглежда код за грешки и рискове, преди да го пуснеш.', 'search'],
     ['analyst', 'Анализатор', 'Сравнява варианти, плюсове и минуси и дава препоръка.', 'sliders'],
+    ['marketer', 'Маркетолог', 'Идеи за реклама, текстове и план за социални мрежи.', 'sparkle'],
+    ['debater', 'Дебатьор', 'Защитава обратната гледна точка, за да провериш идеите си.', 'sliders'],
+    ['factcheck', 'Проверка на факти', 'Отделя сигурното от несигурното и казва какво да провериш.', 'search'],
+    ['interviewer', 'Интервюър', 'Задава въпроси като на интервю и оценява отговорите ти.', 'user'],
+    ['chef', 'Готвач', 'Рецепти по продуктите, които имаш, с количества и стъпки.', 'book'],
+    ['coach', 'Треньор', 'Планове за навици и тренировки на малки стъпки (не е лекар).', 'check'],
+    ['strategist', 'Стратег', 'Разбива цел на етапи, срокове и първи действия за днес.', 'clock'],
+    ['storyteller', 'Разказвач', 'Пише истории, сцени и диалози с характер.', 'edit'],
   ];
 
   function updatePluginsBadge() {
@@ -1189,6 +1611,7 @@
       b.querySelector('small').textContent = desc;
       b.addEventListener('click', () => {
         const on = !state.plugins.includes(id);
+        if (on && state.plugins.length >= 8) { toast('Най-много 8 плъгина наведнъж'); return; }
         state.plugins = on ? [...state.plugins, id] : state.plugins.filter((x) => x !== id);
         b.classList.toggle('on', on);
         save();
@@ -1301,7 +1724,7 @@
     if (!b) return;
     closeMenus();
     ({
-      upgrade: () => toast('Плановете скоро ще бъдат достъпни'),
+      upgrade: plansModal,
       personal: personalModal,
       memory: memoryModal,
       profile: () => (account ? profileModal() : authModal('login')),
@@ -1447,7 +1870,8 @@
         },
       });
     });
-    clear.style.marginTop = '14px';
+    wrap.append(settingsExtras());
+    clear.style.marginTop = '18px';
     wrap.append(clear);
     modal('Настройки', wrap, { cancel: 'Затвори' });
   }
@@ -1460,7 +1884,11 @@
       '<li><b>Плъгини</b> — включват специални умения; <b>Библиотека</b> — файловете и запазените отговори; <b>Разглеждане</b> — готови идеи.</li>' +
       '<li><b>Low / Medium / High</b> — колко подробен да е отговорът.</li>' +
       '<li><b>Chat / Work</b> — свободен разговор или работен режим.</li>' +
-      '<li>Иконата горе вдясно пуска <b>временен чат</b>, който не се запазва.</li></ul>'
+      '<li>Иконата горе вдясно пуска <b>временен чат</b>, който не се запазва.</li>' +
+      '<li>Напиши <b>/</b> в полето за готови команди (/превод, /обобщи, /съвет…).</li>' +
+      '<li><b>✨</b> до полето подобрява промпта ти (натисни пак за връщане); <b>+ → Съвет от 3 експерта</b> задава въпроса на трима „експерти“.</li>' +
+      '<li>Бутонът за изпращане става <b>Спри</b> по време на отговор (или Esc). Под отговора има бутони за бързи продължения и четене на глас.</li>' +
+      '<li><b>Ctrl+K</b> — търсене, <b>Alt+N</b> — нов чат.</li></ul>'
     ), { cancel: 'Затвори' });
   }
 
@@ -1574,6 +2002,7 @@
         state.effort = remote.effort || state.effort;
         state.mode = remote.mode || state.mode;
         state.pinnedOpen = remote.pinnedOpen !== false;
+        state.accent = remote.accent || state.accent;
       }
       state.profile.name = user.name;
       remoteReady = true;

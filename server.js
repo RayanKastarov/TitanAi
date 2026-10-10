@@ -72,6 +72,48 @@ const PLUGIN_HINTS = {
     'and a fix. You only read and reason about the code, you cannot run it, so say when something needs real testing.',
   analyst:
     'Plugin "Analyst" is active: compare options, list pros and cons, point out risks and end with a clear recommendation.',
+  marketer:
+    'Plugin "Marketer" is active: think like a marketing strategist. Give concrete angles, hooks, slogans and a simple ' +
+    'content plan. Ask for the target audience only if it is truly missing.',
+  debater:
+    'Plugin "Debater" is active: first make sure you understood the idea, then argue the strongest opposing case fairly ' +
+    '(steelman), point out blind spots and finish with a balanced verdict.',
+  factcheck:
+    'Plugin "Fact-check" is active: separate what you are confident about from what is uncertain or may be outdated. ' +
+    'Mark each key claim as [сигурно], [вероятно] or [непроверено] and say how the user can verify it. ' +
+    'Never invent sources, links or quotes.',
+  interviewer:
+    'Plugin "Interviewer" is active: run a mock interview. Ask ONE question at a time, wait for the answer, then give ' +
+    'short feedback (a strength and one improvement) and ask the next question.',
+  chef:
+    'Plugin "Chef" is active: give recipes with exact quantities, steps and times, adapt them to the ingredients the ' +
+    'user has and mention common allergens.',
+  coach:
+    'Plugin "Coach" is active: build realistic habit and training plans in small steps, ask about limits and stay ' +
+    'motivating. You are not a doctor: for pain, illness or medication advise seeing a professional.',
+  strategist:
+    'Plugin "Strategist" is active: turn a goal into milestones with deadlines, the first 3 actions for today, the key ' +
+    'risks and how to measure progress.',
+  storyteller:
+    'Plugin "Storyteller" is active: write vivid stories, scenes and dialogues with strong characters and a clear arc; ' +
+    'ask for genre or length only if missing.',
+};
+
+// One-off "personas" used by the Expert Council and the Prompt Enhancer (not user-selectable plugins)
+const PERSONA_HINTS = {
+  enhancer:
+    'You are a prompt engineer. Rewrite the user\'s draft into a clearer, more specific and well-structured request for ' +
+    'an AI assistant: keep the original intent and language, add the desired format and level of detail, and put any ' +
+    'missing context as placeholders in [square brackets]. Reply with ONLY the improved prompt, without quotes or explanation.',
+  optimist:
+    'You are the Optimist in an expert council. In at most 110 words give the most promising approach and the biggest ' +
+    'upside. Be concrete, no filler.',
+  skeptic:
+    'You are the Skeptic in an expert council. In at most 110 words name the main risks, hidden costs and what could ' +
+    'go wrong, and how to reduce them. Be concrete, no filler.',
+  pragmatist:
+    'You are the Pragmatist in an expert council. In at most 110 words give the simplest realistic plan with the first ' +
+    'concrete steps. Be concrete, no filler.',
 };
 
 function buildSystemPrompt({ mode, effort, instructions, userName, plugins, notes }) {
@@ -79,7 +121,7 @@ function buildSystemPrompt({ mode, effort, instructions, userName, plugins, note
   if (MODE_HINTS[mode]) parts.push(MODE_HINTS[mode]);
   (Array.isArray(plugins) ? plugins : [])
     .filter((p) => typeof p === 'string' && PLUGIN_HINTS[p])
-    .slice(0, 6)
+    .slice(0, 8)
     .forEach((p) => parts.push(PLUGIN_HINTS[p]));
   if (EFFORT_HINTS[effort]) parts.push(EFFORT_HINTS[effort]);
   if (typeof userName === 'string' && userName.trim()) {
@@ -283,6 +325,22 @@ app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
 app.get('/favicon.ico', (req, res) => res.sendFile(path.join(__dirname, 'favicon.ico')));
 app.get('/favicon.png', (req, res) => res.sendFile(path.join(__dirname, 'favicon.png')));
 app.get('/apple-touch-icon.png', (req, res) => res.sendFile(path.join(__dirname, 'apple-touch-icon.png')));
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json').json({
+    name: 'TitanAI',
+    short_name: 'TitanAI',
+    lang: 'bg',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    background_color: '#0b0b0c',
+    theme_color: '#0b0b0c',
+    icons: [
+      { src: '/favicon.png', sizes: 'any', type: 'image/png', purpose: 'any' },
+      { src: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
+  });
+});
 
 // Tiny in-memory rate limiter (per IP + bucket, per minute)
 const hits = new Map();
@@ -413,6 +471,7 @@ app.delete('/api/auth/account', requireDb, requireAuth, limiter('auth', 10), asy
    ==================================================================== */
 const PLUGIN_IDS = Object.keys(PLUGIN_HINTS);
 const FILE_KINDS = ['text', 'image', 'video'];
+const ACCENT_IDS = ['silver', 'blue', 'purple', 'gold', 'green', 'rose'];
 
 function cleanFiles(files) {
   if (!Array.isArray(files)) return undefined;
@@ -478,6 +537,7 @@ function cleanData(d) {
     effort: ['low', 'medium', 'high'].includes(d.effort) ? d.effort : 'medium',
     mode: d.mode === 'work' ? 'work' : 'chat',
     pinnedOpen: d.pinnedOpen !== false,
+    accent: ACCENT_IDS.includes(d.accent) ? d.accent : 'silver',
   };
 }
 
@@ -734,7 +794,7 @@ async function streamModel(model, messages, res, http = axios) {
 /* STREAM-END */
 
 app.post('/api/chat', limiter('chat', 20), async (req, res) => {
-  const { message, history, mode, effort, instructions, userName, plugins, attachments, notes, stream } = req.body || {};
+  const { message, history, mode, effort, instructions, userName, plugins, attachments, notes, stream, persona } = req.body || {};
   const wantStream = stream === true;
 
   const user = buildUserContent(message, attachments);
@@ -746,10 +806,25 @@ app.post('/api/chat', limiter('chat', 20), async (req, res) => {
     return res.status(500).json({ error: 'Server is missing OPENROUTER_API_KEY.' });
   }
 
+  const personaHint =
+    typeof persona === 'string' && Object.prototype.hasOwnProperty.call(PERSONA_HINTS, persona) ? PERSONA_HINTS[persona] : '';
+  let userContent = user.content;
+  let hist = sanitizeHistory(history);
+  if (personaHint) {
+    hist = persona === 'enhancer' ? [] : hist.slice(-6);
+    if (persona === 'enhancer' && typeof userContent === 'string') {
+      userContent = 'Draft to improve (reply with the improved prompt only):\n<<<\n' + userContent + '\n>>>';
+    }
+  }
   const messages = [
-    { role: 'system', content: buildSystemPrompt({ mode, effort, instructions, userName, plugins, notes }) },
-    ...sanitizeHistory(history),
-    { role: 'user', content: user.content },
+    {
+      role: 'system',
+      content: personaHint
+        ? SYSTEM_PROMPT + ' ' + personaHint
+        : buildSystemPrompt({ mode, effort, instructions, userName, plugins, notes }),
+    },
+    ...hist,
+    { role: 'user', content: userContent },
   ];
   const candidates = user.hasImages && VISION_MODELS.length ? VISION_MODELS : MODELS;
 
