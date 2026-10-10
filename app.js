@@ -973,7 +973,7 @@
   };
 
   function updateHero() {
-    els.greeting.textContent = tempMode ? 'Временен чат — няма да бъде запазен' : state.mode === 'work' ? 'По какво работим днес?' : 'Какво предстои днес?';
+    els.greeting.textContent = tempMode ? 'Временен чат — няма да бъде запазен' : state.mode === 'business' ? 'Какъв бизнес въпрос да проучим?' : state.mode === 'work' ? 'По какво работим днес?' : 'Какво предстои днес?';
     els.suggest.innerHTML = '';
     SUGGESTIONS[state.mode].forEach(([ic, text]) => {
       const li = document.createElement('li');

@@ -1,17 +1,15 @@
-<!DOCTYPE html>
-<html lang="bg">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<html lang="bg"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TitanAI</title>
-  <link rel="icon" href="/favicon.ico" sizes="any" />
-  <link rel="icon" type="image/png" href="/favicon.png" />
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <meta name="theme-color" content="#0b0b0c" />
-  <link rel="manifest" href="/manifest.webmanifest" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="TitanAI" />
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#0b0b0c">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="TitanAI">
   <style>
     :root {
       --bg: #0b0b0c;
@@ -152,7 +150,8 @@
     .menu-btn { display: none; }
     .app.collapsed .menu-btn { display: inline-grid; }
     .seg { display: flex; background: #131315; border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
-    .seg button { background: none; border: 0; padding: 8px 40px; border-radius: 999px; color: var(--muted); font-weight: 600; font-size: 0.9rem; }
+    .seg button { background: none; border: 0; padding: 8px 22px; border-radius: 999px; color: var(--muted); font-weight: 600; font-size: 0.9rem; }
+    @media (max-width: 600px) { .seg button { padding: 8px 10px; font-size: 0.78rem; } }
     .seg button.on { background: #29292d; color: var(--silver-hi); }
     .seg button:not(.on):hover { color: var(--text); }
 
@@ -373,22 +372,22 @@
           <button class="icon-btn" id="collapseBtn" type="button" title="Страничен панел"><i class="ic" data-ic="panel"></i></button>
         </div>
       </div>
-      <div class="menu brand-menu" id="brandMenu" hidden>
+      <div class="menu brand-menu" id="brandMenu" hidden="">
         <button type="button"><i class="ic" data-ic="check"></i><span class="grow">TitanAI Flash<small>Бърз и умен</small></span></button>
-        <button type="button" disabled><i class="ic" data-ic="sparkle"></i><span class="grow">TitanAI Pro<small>Скоро</small></span></button>
+        <button type="button" disabled=""><i class="ic" data-ic="sparkle"></i><span class="grow">TitanAI Pro<small>Скоро</small></span></button>
       </div>
-      <div class="search-box" id="searchBox" hidden>
-        <input id="searchInput" type="text" placeholder="Търсене в чатовете..." />
+      <div class="search-box" id="searchBox" hidden="">
+        <input id="searchInput" type="text" placeholder="Търсене в чатовете...">
       </div>
 
       <nav class="sb-scroll">
         <button class="nav-item primary" id="newChat" type="button"><i class="ic" data-ic="edit"></i><span>Нов чат</span></button>
         <button class="nav-item" type="button" data-soon="Насрочени"><i class="ic" data-ic="clock"></i><span>Насрочени</span></button>
         <button class="nav-item" id="libraryBtn" type="button"><i class="ic" data-ic="library"></i><span>Библиотека</span></button>
-        <button class="nav-item" id="pluginsBtn" type="button"><i class="ic" data-ic="at"></i><span>Плъгини</span><span class="badge" id="pluginsBadge" hidden></span></button>
+        <button class="nav-item" id="pluginsBtn" type="button"><i class="ic" data-ic="at"></i><span>Плъгини</span><span class="badge" id="pluginsBadge" hidden=""></span></button>
         <button class="nav-item" id="browseBtn" type="button"><i class="ic" data-ic="dots"></i><span>Разглеждане</span></button>
 
-        <button class="sec-head" id="pinnedHead" type="button" hidden><span>Закачени</span><i class="ic" data-ic="chevd"></i></button>
+        <button class="sec-head" id="pinnedHead" type="button" hidden=""><span>Закачени</span><i class="ic" data-ic="chevd"></i></button>
         <ul class="list" id="pinnedList"></ul>
 
         <div class="sec-head plain">Проекти</div>
@@ -396,23 +395,23 @@
 
         <div class="sec-head plain">Скорошни</div>
         <ul class="list" id="recentList"></ul>
-        <div class="muted-empty" id="recentEmpty" hidden>Няма чатове</div>
+        <div class="muted-empty" id="recentEmpty" hidden="">Няма чатове</div>
       </nav>
 
       <div class="profile-wrap">
-        <div class="menu profile-menu" id="profileMenu" hidden>
+        <div class="menu profile-menu" id="profileMenu" hidden="">
           <button type="button" data-act="profile" class="who">
             <span class="avatar" id="pmAvatar"></span>
             <span class="grow pname"><b id="pmName"></b><small id="pmPlan"></small></span>
             <i class="ic" data-ic="chevr"></i>
           </button>
-          <hr />
+          <hr>
           <button type="button" data-act="upgrade"><i class="ic" data-ic="sparkle"></i><span>Надградете плана</span></button>
           <button type="button" data-act="personal"><i class="ic" data-ic="sliders"></i><span>Персонализация</span></button>
           <button type="button" data-act="memory"><i class="ic" data-ic="book"></i><span>Памет</span></button>
           <button type="button" data-act="profile"><i class="ic" data-ic="user"></i><span>Профил</span></button>
           <button type="button" data-act="settings"><i class="ic" data-ic="settings"></i><span>Настройки</span></button>
-          <hr />
+          <hr>
           <button type="button" data-act="help"><i class="ic" data-ic="help"></i><span class="grow">Помощ</span><i class="ic" data-ic="chevr"></i></button>
           <button type="button" data-act="logout"><i class="ic" data-ic="logout"></i><span id="logoutLabel">Излизане от акаунта</span></button>
         </div>
@@ -430,6 +429,7 @@
         <div class="seg" id="modeSeg">
           <button type="button" data-mode="chat" class="on">Chat</button>
           <button type="button" data-mode="work">Work</button>
+          <button type="button" data-mode="business">Business</button>
         </div>
         <div class="right"><button class="icon-btn" id="tempBtn" type="button" title="Временен чат"><i class="ic" data-ic="temp"></i></button></div>
       </header>
@@ -440,18 +440,18 @@
         <h1 id="greeting">Какво предстои днес?</h1>
         <div id="heroSlot">
           <div class="composer-wrap" id="composerWrap">
-            <div class="attach-tray" id="attachTray" hidden></div>
+            <div class="attach-tray" id="attachTray" hidden=""></div>
             <form class="composer" id="chatForm" autocomplete="off">
               <button class="c-btn" id="plusBtn" type="button" title="Добави"><i class="ic" data-ic="plus"></i></button>
               <textarea id="input" rows="1" placeholder="Попитайте TitanAI" maxlength="12000"></textarea>
               <button class="c-btn" id="enhanceBtn" type="button" title="Подобри промпта ✨"><i class="ic" data-ic="sparkle"></i></button>
               <button class="effort-btn" id="effortBtn" type="button"><span id="effortLabel">Medium</span><i class="ic" data-ic="chevd"></i></button>
               <button class="c-btn" id="micBtn" type="button" title="Диктуване"><i class="ic" data-ic="mic"></i></button>
-              <button class="send-btn" id="sendBtn" type="submit" title="Изпрати" disabled><i class="ic" data-ic="arrowup"></i></button>
+              <button class="send-btn" id="sendBtn" type="submit" title="Изпрати" disabled=""><i class="ic" data-ic="arrowup"></i></button>
             </form>
-            <div class="menu pop-plus" id="plusMenu" hidden></div>
-            <div class="menu pop-effort" id="effortMenu" hidden></div>
-            <div class="menu pop-slash" id="slashMenu" hidden></div>
+            <div class="menu pop-plus" id="plusMenu" hidden=""></div>
+            <div class="menu pop-effort" id="effortMenu" hidden=""></div>
+            <div class="menu pop-slash" id="slashMenu" hidden=""></div>
           </div>
         </div>
         <ul class="suggest" id="suggest"></ul>
@@ -464,10 +464,10 @@
     </main>
   </div>
 
-  <div class="menu ctx" id="ctx" hidden></div>
+  <div class="menu ctx" id="ctx" hidden=""></div>
   <div class="toast" id="toast"></div>
-  <input type="file" id="fileInput" hidden multiple />
+  <input type="file" id="fileInput" hidden="" multiple="">
 
   <script src="app.js"></script>
-</body>
-</html>
+
+</body></html>
