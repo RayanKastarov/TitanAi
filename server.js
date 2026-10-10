@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 // Models are tried in order; if one is unavailable or rate-limited, the next is used.
 // Override on Render with OPENROUTER_MODEL (comma-separated list), e.g.:
 //   OPENROUTER_MODEL=google/gemini-3.8-flash
-const MODELS = (process.env.OPENROUTER_MODEL || 'apodex/apodex-1.1-mini:free,inclusionai/ling-3.1-flash')
+const MODELS = (process.env.OPENROUTER_MODEL || 'apodex/apodex-1.1-mini:free')
   .split(',')
   .map((m) => m.trim())
   .filter(Boolean);
@@ -129,6 +129,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
 
   let lastStatus = 500;
   let lastDetail = 'Unknown error';
+  const failures = [];
 
   for (let i = 0; i < MODELS.length; i += 1) {
     const model = MODELS[i];
@@ -144,12 +145,13 @@ app.post('/api/chat', rateLimit, async (req, res) => {
       lastStatus = err.response?.status || 500;
       lastDetail = err.response?.data?.error?.message || err.message;
       console.error(`OpenRouter error (${model}):`, lastStatus, lastDetail);
+      failures.push(`${model} -> ${lastStatus}: ${lastDetail}`);
       if (!FALLBACK_STATUSES.includes(lastStatus) && err.response) break;
     }
   }
 
   res.status(lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502).json({
-    error: 'TitanAI could not get a response. ' + lastDetail,
+    error: 'TitanAI could not get a response. ' + (failures.join(' | ') || lastDetail),
   });
 });
 
