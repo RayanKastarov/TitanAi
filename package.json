@@ -1,7 +1,7 @@
 {
   "name": "titanai",
-  "version": "1.0.0",
-  "description": "TitanAI - minimal AI chatbot (Express + OpenRouter)",
+  "version": "1.1.0",
+  "description": "TitanAI - minimal AI chatbot (Express + OpenRouter + Postgres accounts)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,6 +12,7 @@
   "dependencies": {
     "axios": "^1.7.0",
     "express": "^4.19.2",
-    "helmet": "^7.1.0"
+    "helmet": "^7.1.0",
+    "pg": "^8.12.0"
   }
 }

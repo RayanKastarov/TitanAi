@@ -44,7 +44,7 @@
     'newChat', 'pinnedHead', 'pinnedList', 'recentList', 'recentEmpty', 'profileBtn', 'profileMenu', 'avatar',
     'pName', 'pPlan', 'pmAvatar', 'pmName', 'pmPlan', 'menuBtn', 'modeSeg', 'tempBtn', 'chat', 'messages', 'hero',
     'greeting', 'heroSlot', 'suggest', 'bottomSlot', 'composerWrap', 'chatForm', 'input', 'plusBtn', 'plusMenu',
-    'effortBtn', 'effortLabel', 'effortMenu', 'micBtn', 'sendBtn', 'fileInput', 'ctx', 'toast',
+    'effortBtn', 'effortLabel', 'effortMenu', 'micBtn', 'sendBtn', 'fileInput', 'ctx', 'toast', 'logoutLabel',
   ].forEach((id) => { els[id] = document.getElementById(id); });
 
   /* ---------- State ---------- */
@@ -62,12 +62,38 @@
   let activeId = null;
   let busy = false;
   let tempMode = false;
+  let account = null;       // logged-in user {id, email, name}, or null for guest
+  let remoteReady = false;  // account data loaded, so saving to the server is safe
+  let remoteTimer = null;
+
+  const snapshot = () => ({ ...state, sessions: state.sessions.filter((s) => !s.temp) });
 
   function save() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify({ ...state, sessions: state.sessions.filter((s) => !s.temp) }));
-    } catch (e) { /* storage unavailable */ }
+    if (account) {
+      if (!remoteReady) return;
+      clearTimeout(remoteTimer);
+      remoteTimer = setTimeout(() => pushRemote(false), 1200);
+      return;
+    }
+    try { localStorage.setItem(KEY, JSON.stringify(snapshot())); } catch (e) { /* storage unavailable */ }
   }
+
+  async function pushRemote(keepalive) {
+    clearTimeout(remoteTimer);
+    remoteTimer = null;
+    if (!account || !remoteReady) return;
+    const body = JSON.stringify({ data: snapshot() });
+    try {
+      await fetch('/api/data', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: !!keepalive && body.length < 60000,
+      });
+    } catch (e) { /* retried on next save */ }
+  }
+
+  window.addEventListener('pagehide', () => { if (remoteTimer) pushRemote(true); });
 
   const getActive = () => state.sessions.find((s) => s.id === activeId) || null;
 
@@ -141,13 +167,22 @@
     act.className = 'm-actions';
     const close = () => ov.remove();
     if (cancel) act.append(mkBtn(cancel, '', close));
-    if (onOk) act.append(mkBtn(ok, danger ? 'danger' : 'primary', () => { if (onOk(box) !== false) close(); }));
+    if (onOk) {
+      const okBtn = mkBtn(ok, danger ? 'danger' : 'primary', async () => {
+        okBtn.disabled = true;
+        let r;
+        try { r = await onOk(box); } finally { okBtn.disabled = false; }
+        if (r !== false) close();
+      });
+      act.append(okBtn);
+    }
     box.append(h, body, act);
     ov.append(box);
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
     document.body.append(ov);
     const f = box.querySelector('input, textarea');
     if (f) { f.focus(); if (f.select && f.tagName === 'INPUT') f.select(); }
+    return box;
   }
 
   function field(labelText, el) {
@@ -351,10 +386,11 @@
   }
 
   function updateProfile() {
-    const n = state.profile.name || 'Гост';
+    const n = account ? account.name : (state.profile.name || 'Гост');
     els.pName.textContent = els.pmName.textContent = n;
-    els.pPlan.textContent = els.pmPlan.textContent = state.profile.plan;
+    els.pPlan.textContent = els.pmPlan.textContent = account ? account.email : 'Влез или се регистрирай';
     els.avatar.textContent = els.pmAvatar.textContent = initials(n);
+    els.logoutLabel.textContent = account ? 'Излизане от акаунта' : 'Вход или регистрация';
   }
 
   function renderAll() {
@@ -599,23 +635,52 @@
     ({
       upgrade: () => toast('Плановете скоро ще бъдат достъпни'),
       personal: personalModal,
-      profile: profileModal,
+      profile: () => (account ? profileModal() : authModal('login')),
       settings: settingsModal,
       help: helpModal,
-      logout: logoutModal,
+      logout: () => (account ? logoutModal() : authModal('login')),
     })[b.dataset.act]();
   });
 
   function profileModal() {
+    const wrap = document.createElement('div');
     const inp = document.createElement('input');
-    inp.value = state.profile.name === 'Гост' ? '' : state.profile.name;
-    inp.placeholder = 'Как да те наричам?';
+    inp.value = account.name;
     inp.maxLength = 40;
-    modal('Профил', field('Име', inp), {
-      onOk: () => {
-        state.profile.name = inp.value.trim() || 'Гост';
-        save();
-        updateProfile();
+    const mail = document.createElement('input');
+    mail.value = account.email;
+    mail.disabled = true;
+    wrap.append(field('Име', inp), field('Имейл', mail));
+    const del = mkBtn('Изтрий акаунта', 'inline-btn danger', deleteAccountModal);
+    del.style.marginTop = '16px';
+    wrap.append(del);
+    modal('Профил', wrap, {
+      onOk: async () => {
+        const v = inp.value.trim();
+        if (!v) return false;
+        if (v === account.name) return;
+        try {
+          const d = await api('/api/auth/name', 'PUT', { name: v });
+          account.name = d.user.name;
+          state.profile.name = account.name;
+          save();
+          updateProfile();
+        } catch (e) { toast(e.message); return false; }
+      },
+    });
+  }
+
+  function deleteAccountModal() {
+    const pw = document.createElement('input');
+    pw.type = 'password';
+    pw.autocomplete = 'current-password';
+    modal('Изтриване на акаунта', field('Въведи паролата си. Акаунтът и чатовете му ще бъдат изтрити завинаги.', pw), {
+      ok: 'Изтрий завинаги', danger: true,
+      onOk: async () => {
+        try {
+          await api('/api/auth/account', 'DELETE', { password: pw.value });
+          location.reload();
+        } catch (e) { toast(e.message); return false; }
       },
     });
   }
@@ -637,7 +702,9 @@
 
   function settingsModal() {
     const wrap = document.createElement('div');
-    wrap.append(textBlock('<p>Чатовете се пазят само в този браузър.</p>'));
+    wrap.append(textBlock(account
+      ? '<p>Чатовете ти се синхронизират с акаунта.</p>'
+      : '<p>Чатовете се пазят само в този браузър. Влез в профил, за да ги имаш навсякъде.</p>'));
     const clear = mkBtn('Изтрий всички чатове', 'inline-btn danger', () => {
       modal('Изтриване на всички чатове?', textBlock('<p>Това действие е необратимо.</p>'), {
         ok: 'Изтрий всичко', danger: true,
@@ -666,17 +733,133 @@
   }
 
   function logoutModal() {
-    modal('Излизане от акаунта', textBlock('<p>Профилът и всички чатове ще бъдат изчистени от това устройство.</p>'), {
+    modal('Излизане от акаунта', textBlock('<p>Чатовете ти остават запазени в акаунта и ще ги видиш, когато влезеш отново.</p>'), {
       ok: 'Излез', danger: true,
-      onOk: () => {
-        try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
+      onOk: async () => {
+        await pushRemote(false);
+        try { await api('/api/auth/logout', 'POST'); } catch (e) { /* ignore */ }
         location.reload();
       },
     });
+  }
+
+  /* ---------- Accounts ---------- */
+  async function api(url, method = 'GET', body) {
+    const res = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Грешка (' + res.status + ')');
+    return data;
+  }
+
+  function authModal(initial) {
+    let mode = initial || 'login';
+    let okBtn = null;
+    const wrap = document.createElement('div');
+    const tabs = document.createElement('div');
+    tabs.className = 'tabs';
+    const tLogin = mkBtn('Вход', 'tab', () => setMode('login'));
+    const tReg = mkBtn('Регистрация', 'tab', () => setMode('register'));
+    tabs.append(tLogin, tReg);
+
+    const name = document.createElement('input');
+    name.maxLength = 40;
+    name.placeholder = 'Как да те наричам?';
+    name.autocomplete = 'name';
+    const email = document.createElement('input');
+    email.type = 'email';
+    email.maxLength = 254;
+    email.placeholder = 'ime@primer.com';
+    email.autocomplete = 'email';
+    const pass = document.createElement('input');
+    pass.type = 'password';
+    pass.maxLength = 200;
+
+    const nameField = field('Име', name);
+    const hint = textBlock('<p class="hint">Паролата трябва да е поне 8 символа.</p>');
+    const err = document.createElement('div');
+    err.className = 'form-err';
+    wrap.append(tabs, nameField, field('Имейл', email), field('Парола', pass), hint, err);
+
+    function setMode(m) {
+      mode = m;
+      tLogin.classList.toggle('on', m === 'login');
+      tReg.classList.toggle('on', m === 'register');
+      nameField.hidden = m !== 'register';
+      hint.hidden = m !== 'register';
+      pass.autocomplete = m === 'login' ? 'current-password' : 'new-password';
+      if (okBtn) okBtn.textContent = m === 'login' ? 'Вход' : 'Създай профил';
+      err.textContent = '';
+    }
+
+    const box = modal('Добре дошъл в TitanAI', wrap, {
+      ok: 'Вход',
+      onOk: async () => {
+        err.textContent = '';
+        try {
+          const data = await api(
+            mode === 'login' ? '/api/auth/login' : '/api/auth/register',
+            'POST',
+            { email: email.value, password: pass.value, name: name.value }
+          );
+          await adoptAccount(data.user, false);
+        } catch (e) {
+          err.textContent = e.message;
+          return false;
+        }
+      },
+    });
+    okBtn = box.querySelector('.m-actions .primary');
+    wrap.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); okBtn.click(); }
+    });
+    setMode(mode);
+    email.focus();
+  }
+
+  async function adoptAccount(user, silent) {
+    account = user;
+    remoteReady = false;
+    let remote = null;
+    let loaded = false;
+    try {
+      remote = (await api('/api/data')).data;
+      loaded = true;
+    } catch (e) {
+      toast('Чатовете не можаха да се заредят от акаунта');
+    }
+    if (loaded) {
+      const hasRemote = remote && Array.isArray(remote.sessions);
+      if (hasRemote) {
+        state.sessions = remote.sessions;
+        state.profile = { ...state.profile, ...(remote.profile || {}) };
+        state.effort = remote.effort || state.effort;
+        state.mode = remote.mode || state.mode;
+        state.pinnedOpen = remote.pinnedOpen !== false;
+      }
+      state.profile.name = user.name;
+      remoteReady = true;
+      if (!hasRemote) await pushRemote(false); // new account: keep the guest chats
+    }
+    activeId = null;
+    tempMode = false;
+    renderAll();
+    if (!silent) toast('Влязъл си като ' + user.email);
+  }
+
+  async function loadAccount() {
+    try {
+      const { user } = await api('/api/auth/me');
+      if (user) await adoptAccount(user, true);
+    } catch (e) { /* stay in guest mode */ }
   }
 
   /* ---------- Init ---------- */
   renderAll();
   updateSend();
   els.input.focus();
+  loadAccount();
 })();
