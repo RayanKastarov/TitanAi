@@ -14,13 +14,37 @@ const SYSTEM_PROMPT =
   'You are TitanAI, a helpful, precise and friendly AI assistant. ' +
   'Always reply in the same language the user writes in.';
 
-const MAX_MESSAGE_LEN = 4000;
+const EFFORT_HINTS = {
+  low: 'Keep answers short and to the point.',
+  medium: 'Give balanced answers: clear and reasonably detailed.',
+  high: 'Give thorough, well-structured and detailed answers, reasoning step by step when useful.',
+};
+const MODE_HINTS = {
+  work:
+    'You are in Work mode: act as a professional productivity assistant. ' +
+    'Be structured, concise and action-oriented (plans, drafts, checklists).',
+};
+
+function buildSystemPrompt({ mode, effort, instructions, userName }) {
+  const parts = [SYSTEM_PROMPT];
+  if (MODE_HINTS[mode]) parts.push(MODE_HINTS[mode]);
+  if (EFFORT_HINTS[effort]) parts.push(EFFORT_HINTS[effort]);
+  if (typeof userName === 'string' && userName.trim()) {
+    parts.push(`The user's name is ${userName.trim().slice(0, 60)}.`);
+  }
+  if (typeof instructions === 'string' && instructions.trim()) {
+    parts.push('Custom instructions from the user: ' + instructions.trim().slice(0, 1000));
+  }
+  return parts.join(' ');
+}
+
+const MAX_MESSAGE_LEN = 12000;
 const MAX_HISTORY = 20;
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 app.use(helmet());
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '500kb' }));
 
 // Static files (only the two public files, so server.js / package.json stay private)
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
@@ -64,7 +88,7 @@ function sanitizeHistory(history) {
 }
 
 app.post('/api/chat', rateLimit, async (req, res) => {
-  const { message, history } = req.body || {};
+  const { message, history, mode, effort, instructions, userName } = req.body || {};
 
   if (typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'Message is required.' });
@@ -74,7 +98,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
   }
 
   const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: buildSystemPrompt({ mode, effort, instructions, userName }) },
     ...sanitizeHistory(history),
     { role: 'user', content: message.slice(0, MAX_MESSAGE_LEN) },
   ];
