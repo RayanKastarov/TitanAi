@@ -19,6 +19,12 @@ const MODELS = (process.env.OPENROUTER_MODEL || 'apodex/apodex-1.1-mini:free')
   .split(',')
   .map((m) => m.trim())
   .filter(Boolean);
+// Optional: models used when a message contains images/video frames.
+// Set OPENROUTER_VISION_MODEL (comma-separated) to models that accept image input.
+const VISION_MODELS = (process.env.OPENROUTER_VISION_MODEL || '')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
 const FALLBACK_STATUSES = [400, 402, 404, 408, 429, 500, 502, 503, 504];
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -37,9 +43,32 @@ const MODE_HINTS = {
     'Be structured, concise and action-oriented (plans, drafts, checklists).',
 };
 
-function buildSystemPrompt({ mode, effort, instructions, userName }) {
+const PLUGIN_HINTS = {
+  coder:
+    'Plugin "Coder" is active: when code is shared, find bugs, explain them simply and reply with complete, ' +
+    'runnable, well-commented code in fenced code blocks.',
+  translator:
+    'Plugin "Translator" is active: translate the text the user provides (if no target language is named, ' +
+    'translate between Bulgarian and English) and briefly note any nuance in tone or meaning.',
+  writer:
+    'Plugin "Writer" is active: help with emails, essays, posts and editing. Match the requested tone, ' +
+    'and offer a polished final version.',
+  summarizer:
+    'Plugin "Summarizer" is active: condense long text into a short summary followed by the key points as a list.',
+  teacher:
+    'Plugin "Teacher" is active: explain step by step with simple words and a concrete example, ' +
+    'then finish with a short check question.',
+  analyst:
+    'Plugin "Analyst" is active: compare options, list pros and cons, point out risks and end with a clear recommendation.',
+};
+
+function buildSystemPrompt({ mode, effort, instructions, userName, plugins }) {
   const parts = [SYSTEM_PROMPT];
   if (MODE_HINTS[mode]) parts.push(MODE_HINTS[mode]);
+  (Array.isArray(plugins) ? plugins : [])
+    .filter((p) => typeof p === 'string' && PLUGIN_HINTS[p])
+    .slice(0, 6)
+    .forEach((p) => parts.push(PLUGIN_HINTS[p]));
   if (EFFORT_HINTS[effort]) parts.push(EFFORT_HINTS[effort]);
   if (typeof userName === 'string' && userName.trim()) {
     parts.push(`The user's name is ${userName.trim().slice(0, 60)}.`);
@@ -52,6 +81,13 @@ function buildSystemPrompt({ mode, effort, instructions, userName }) {
 
 const MAX_MESSAGE_LEN = 12000;
 const MAX_HISTORY = 20;
+const MAX_HISTORY_MSG = 45000;     // a history message may contain an attached text file
+const MAX_HISTORY_TOTAL = 150000;  // total characters of history sent to the model
+const MAX_FILE_TEXT = 40000;       // characters of one attached text/code file
+const MAX_ATTACHMENTS = 5;
+const MAX_IMAGES = 8;              // images + video frames per message
+const MAX_IMAGE_DATAURL = 3500000;
+const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 
 /* ====================================================================
    Database (PostgreSQL via DATABASE_URL) - used for accounts & chat sync
@@ -72,6 +108,20 @@ CREATE TABLE IF NOT EXISTS user_data (
 `;
 
 let pool = null;
+let dbInit = null;
+function initDb() {
+  if (!dbInit) {
+    dbInit = pool.query(SCHEMA).then(
+      () => console.log('Database ready'),
+      (e) => {
+        dbInit = null; // try again on the next request
+        console.error('Database init failed:', e.message);
+        throw e;
+      }
+    );
+  }
+  return dbInit;
+}
 if (process.env.DATABASE_URL) {
   const { Pool } = require('pg');
   pool = new Pool({
@@ -80,10 +130,7 @@ if (process.env.DATABASE_URL) {
     max: 5,
   });
   pool.on('error', (e) => console.error('DB pool error:', e.message));
-  pool
-    .query(SCHEMA)
-    .then(() => console.log('Database ready'))
-    .catch((e) => console.error('Database init failed:', e.message));
+  initDb().catch(() => {});
 } else {
   console.warn('DATABASE_URL is not set: accounts are disabled (guest mode only).');
 }
@@ -167,8 +214,17 @@ function normEmail(v) {
   return e.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : '';
 }
 
-function requireDb(req, res, next) {
-  if (!pool) return res.status(503).json({ error: 'Профилите не са настроени на сървъра (липсва DATABASE_URL).' });
+async function requireDb(req, res, next) {
+  if (!pool) {
+    return res.status(503).json({
+      error: 'Профилите не са настроени на сървъра: липсва променливата DATABASE_URL (база данни PostgreSQL).',
+    });
+  }
+  try {
+    await initDb();
+  } catch (e) {
+    return res.status(503).json({ error: 'Няма връзка с базата данни. Провери DATABASE_URL на сървъра.' });
+  }
   next();
 }
 
@@ -184,14 +240,28 @@ function requireAuth(req, res, next) {
    ==================================================================== */
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        'img-src': ["'self'", 'data:', 'blob:'],
+        'media-src': ["'self'", 'blob:'], // lets the browser read a chosen video locally to take frames from it
+      },
+    },
+  })
+);
 app.use('/api/data', express.json({ limit: '3mb' })); // chat history can be larger
+app.use('/api/chat', express.json({ limit: '12mb' })); // images / video frames
 app.use(express.json({ limit: '500kb' }));
 
 // Static files (only the two public files, so server.js / package.json stay private)
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
+app.get('/favicon.ico', (req, res) => res.sendFile(path.join(__dirname, 'favicon.ico')));
+app.get('/favicon.png', (req, res) => res.sendFile(path.join(__dirname, 'favicon.png')));
+app.get('/apple-touch-icon.png', (req, res) => res.sendFile(path.join(__dirname, 'apple-touch-icon.png')));
 
 // Tiny in-memory rate limiter (per IP + bucket, per minute)
 const hits = new Map();
@@ -320,6 +390,25 @@ app.delete('/api/auth/account', requireDb, requireAuth, limiter('auth', 10), asy
 /* ====================================================================
    Chat sync (per account)
    ==================================================================== */
+const PLUGIN_IDS = Object.keys(PLUGIN_HINTS);
+const FILE_KINDS = ['text', 'image', 'video'];
+
+function cleanFiles(files) {
+  if (!Array.isArray(files)) return undefined;
+  const out = files
+    .slice(0, MAX_ATTACHMENTS)
+    .filter((f) => f && typeof f.name === 'string' && FILE_KINDS.includes(f.kind))
+    .map((f) => {
+      const o = { name: f.name.slice(0, 120), kind: f.kind };
+      if (f.kind === 'text' && typeof f.text === 'string') o.text = f.text.slice(0, MAX_FILE_TEXT);
+      if (f.kind !== 'text' && typeof f.thumb === 'string' && IMG_RE.test(f.thumb) && f.thumb.length < 40000) {
+        o.thumb = f.thumb;
+      }
+      return o;
+    });
+  return out.length ? out : undefined;
+}
+
 function cleanData(d) {
   if (!d || typeof d !== 'object') return null;
   const sessions = (Array.isArray(d.sessions) ? d.sessions : [])
@@ -333,11 +422,28 @@ function cleanData(d) {
       messages: s.messages
         .slice(0, 500)
         .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-        .map((m) => ({ role: m.role, content: m.content.slice(0, 50000) })),
+        .map((m) => {
+          const o = { role: m.role, content: m.content.slice(0, 50000) };
+          const files = m.role === 'user' ? cleanFiles(m.files) : undefined;
+          if (files) o.files = files;
+          return o;
+        }),
     }));
+  const saved = (Array.isArray(d.saved) ? d.saved : [])
+    .slice(0, 200)
+    .filter((x) => x && typeof x.text === 'string' && x.text.trim())
+    .map((x) => ({
+      id: String(x.id || Date.now()).slice(0, 64),
+      title: String(x.title || '').slice(0, 100),
+      text: x.text.slice(0, 20000),
+      ts: Number(x.ts) || Date.now(),
+    }));
+  const plugins = (Array.isArray(d.plugins) ? d.plugins : []).filter((p) => PLUGIN_IDS.includes(p));
   const p = d.profile && typeof d.profile === 'object' ? d.profile : {};
   return {
     sessions,
+    saved,
+    plugins: [...new Set(plugins)],
     profile: { name: String(p.name || '').slice(0, 40), instructions: String(p.instructions || '').slice(0, 1000) },
     effort: ['low', 'medium', 'high'].includes(d.effort) ? d.effort : 'medium',
     mode: d.mode === 'work' ? 'work' : 'chat',
@@ -376,7 +482,7 @@ app.put('/api/data', requireDb, requireAuth, limiter('data', 60), async (req, re
    ==================================================================== */
 function sanitizeHistory(history) {
   if (!Array.isArray(history)) return [];
-  return history
+  const clean = history
     .filter(
       (m) =>
         m &&
@@ -385,7 +491,54 @@ function sanitizeHistory(history) {
         m.content.trim()
     )
     .slice(-MAX_HISTORY)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_MESSAGE_LEN) }));
+    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_HISTORY_MSG) }));
+  // keep the newest messages that fit the total budget
+  let total = 0;
+  const out = [];
+  for (let i = clean.length - 1; i >= 0; i -= 1) {
+    total += clean[i].content.length;
+    if (total > MAX_HISTORY_TOTAL) break;
+    out.unshift(clean[i]);
+  }
+  return out;
+}
+
+// Builds the user's message: typed text + attached files (text/code, images, video frames).
+function buildUserContent(message, attachments) {
+  let text = typeof message === 'string' ? message.slice(0, MAX_MESSAGE_LEN) : '';
+  const images = [];
+  const list = Array.isArray(attachments) ? attachments.slice(0, MAX_ATTACHMENTS) : [];
+
+  for (const a of list) {
+    if (!a || typeof a.name !== 'string') continue;
+    const name = a.name.slice(0, 120);
+    if (a.kind === 'text' && typeof a.text === 'string') {
+      text += `\n\nФайл „${name}“:\n\`\`\`\n${a.text.slice(0, MAX_FILE_TEXT)}\n\`\`\`\n`;
+    } else if (a.kind === 'image' && typeof a.dataUrl === 'string') {
+      if (a.dataUrl.length <= MAX_IMAGE_DATAURL && IMG_RE.test(a.dataUrl) && images.length < MAX_IMAGES) {
+        images.push(a.dataUrl);
+        text += `\n[Прикачено изображение: ${name}]`;
+      }
+    } else if (a.kind === 'video' && Array.isArray(a.frames)) {
+      const frames = a.frames
+        .filter((f) => typeof f === 'string' && f.length <= MAX_IMAGE_DATAURL && IMG_RE.test(f))
+        .slice(0, Math.max(0, MAX_IMAGES - images.length));
+      if (frames.length) {
+        images.push(...frames);
+        text +=
+          `\n[Прикачено видео „${name}“. Следват ${frames.length} кадъра от него, равномерно разпределени ` +
+          'във времето. Звукът не се анализира.]';
+      }
+    }
+  }
+
+  text = text.trim();
+  if (!text && images.length) text = 'Какво виждаш на прикачените изображения?';
+  if (!images.length) return { content: text, hasImages: false };
+  return {
+    content: [{ type: 'text', text }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))],
+    hasImages: true,
+  };
 }
 
 function callModel(model, messages) {
@@ -405,9 +558,11 @@ function callModel(model, messages) {
 }
 
 app.post('/api/chat', limiter('chat', 20), async (req, res) => {
-  const { message, history, mode, effort, instructions, userName } = req.body || {};
+  const { message, history, mode, effort, instructions, userName, plugins, attachments } = req.body || {};
 
-  if (typeof message !== 'string' || !message.trim()) {
+  const user = buildUserContent(message, attachments);
+  const empty = Array.isArray(user.content) ? !user.content.length : !user.content;
+  if (empty) {
     return res.status(400).json({ error: 'Message is required.' });
   }
   if (!process.env.OPENROUTER_API_KEY) {
@@ -415,17 +570,18 @@ app.post('/api/chat', limiter('chat', 20), async (req, res) => {
   }
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt({ mode, effort, instructions, userName }) },
+    { role: 'system', content: buildSystemPrompt({ mode, effort, instructions, userName, plugins }) },
     ...sanitizeHistory(history),
-    { role: 'user', content: message.slice(0, MAX_MESSAGE_LEN) },
+    { role: 'user', content: user.content },
   ];
+  const candidates = user.hasImages && VISION_MODELS.length ? VISION_MODELS : MODELS;
 
   let lastStatus = 500;
   let lastDetail = 'Unknown error';
   const failures = [];
 
-  for (let i = 0; i < MODELS.length; i += 1) {
-    const model = MODELS[i];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const model = candidates[i];
     try {
       const response = await callModel(model, messages);
       const reply = response.data?.choices?.[0]?.message?.content;
@@ -444,8 +600,12 @@ app.post('/api/chat', limiter('chat', 20), async (req, res) => {
     }
   }
 
+  const visionHint =
+    user.hasImages && !VISION_MODELS.length
+      ? ' (Ако изпращаш снимка или видео: моделът може да не поддържа изображения. Задай OPENROUTER_VISION_MODEL с модел, който приема изображения.)'
+      : '';
   res.status(lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502).json({
-    error: 'TitanAI could not get a response. ' + (failures.join(' | ') || lastDetail),
+    error: 'TitanAI could not get a response. ' + (failures.join(' | ') || lastDetail) + visionHint,
   });
 });
 

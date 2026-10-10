@@ -32,6 +32,11 @@
     code: '<path d="m8 8-5 4 5 4M16 8l5 4-5 4M14 5l-4 14"/>',
     copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
     check: '<path d="m5 12.5 4.5 4.5L19 7"/>',
+    x: '<path d="M6 6l12 12M18 6 6 18"/>',
+    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 8"/>',
+    film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M16 4v16M3 9h5M3 15h5M16 9h5M16 15h5"/>',
+    file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>',
+    bookmark: '<path d="M6 4h12v17l-6-4-6 4Z"/>',
   };
   const svg = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
   const paintIcons = (root) => root.querySelectorAll('[data-ic]').forEach((e) => { e.innerHTML = svg(e.dataset.ic); });
@@ -45,15 +50,23 @@
     'pName', 'pPlan', 'pmAvatar', 'pmName', 'pmPlan', 'menuBtn', 'modeSeg', 'tempBtn', 'chat', 'messages', 'hero',
     'greeting', 'heroSlot', 'suggest', 'bottomSlot', 'composerWrap', 'chatForm', 'input', 'plusBtn', 'plusMenu',
     'effortBtn', 'effortLabel', 'effortMenu', 'micBtn', 'sendBtn', 'fileInput', 'ctx', 'toast', 'logoutLabel',
+    'libraryBtn', 'pluginsBtn', 'browseBtn', 'pluginsBadge', 'attachTray',
   ].forEach((id) => { els[id] = document.getElementById(id); });
 
   /* ---------- State ---------- */
   function load() {
-    const base = { sessions: [], profile: { name: 'Гост', plan: 'Безплатен', instructions: '' }, effort: 'medium', mode: 'chat', pinnedOpen: true };
+    const base = { sessions: [], saved: [], plugins: [], profile: { name: 'Гост', plan: 'Безплатен', instructions: '' }, effort: 'medium', mode: 'chat', pinnedOpen: true };
     try {
       const d = JSON.parse(localStorage.getItem(KEY));
       if (d && typeof d === 'object') {
-        return { ...base, ...d, profile: { ...base.profile, ...(d.profile || {}) }, sessions: Array.isArray(d.sessions) ? d.sessions : [] };
+        return {
+          ...base,
+          ...d,
+          profile: { ...base.profile, ...(d.profile || {}) },
+          sessions: Array.isArray(d.sessions) ? d.sessions : [],
+          saved: Array.isArray(d.saved) ? d.saved : [],
+          plugins: Array.isArray(d.plugins) ? d.plugins : [],
+        };
       }
     } catch (e) { /* ignore */ }
     return base;
@@ -156,11 +169,12 @@
 
   /* ---------- Modal ---------- */
   function modal(title, body, opts = {}) {
-    const { ok = 'Запази', onOk, cancel = 'Отказ', danger = false } = opts;
+    const { ok = 'Запази', onOk, cancel = 'Отказ', danger = false, wide = false } = opts;
     const ov = document.createElement('div');
     ov.className = 'overlay';
     const box = document.createElement('div');
-    box.className = 'modal';
+    box.className = 'modal' + (wide ? ' wide' : '');
+    if (wide) body.classList.add('body');
     const h = document.createElement('h3');
     h.textContent = title;
     const act = document.createElement('div');
@@ -305,14 +319,71 @@
     els.messages.scrollTo({ top: els.messages.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
   }
 
-  function row(role, text, isErr) {
+  const KIND_LABEL = { text: 'Файл / код', image: 'Изображение', video: 'Видео' };
+  const KIND_ICON = { text: 'file', image: 'image', video: 'film' };
+
+  function attChip(f, onRemove) {
+    const d = document.createElement('div');
+    d.className = 'att' + (f.status === 'loading' ? ' loading' : '');
+    let lead;
+    if (f.thumb) {
+      lead = document.createElement('img');
+      lead.className = 'thumb';
+      lead.alt = '';
+      lead.src = f.thumb;
+    } else {
+      lead = document.createElement('span');
+      lead.className = 'ficon';
+      lead.innerHTML = svg(KIND_ICON[f.kind] || 'file');
+    }
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    const b = document.createElement('b');
+    b.textContent = f.name;
+    const sm = document.createElement('small');
+    sm.textContent = f.status === 'loading' ? 'Обработва се…' : (KIND_LABEL[f.kind] || 'Файл') + (f.note ? ' · ' + f.note : '');
+    meta.append(b, sm);
+    d.append(lead, meta);
+    if (onRemove) {
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'x';
+      x.title = 'Премахни';
+      x.innerHTML = svg('x');
+      x.addEventListener('click', onRemove);
+      d.append(x);
+    }
+    return d;
+  }
+
+  function saveReply(text) {
+    if (state.saved.some((x) => x.text === text)) { toast('Вече е в библиотеката'); return; }
+    const s = getActive();
+    state.saved.unshift({ id: 'v' + Date.now(), title: s ? s.title : 'Отговор', text, ts: Date.now() });
+    state.saved = state.saved.slice(0, 200);
+    save();
+    toast('Запазено в библиотеката');
+  }
+
+  function row(role, text, isErr, files) {
     const r = document.createElement('div');
     r.className = 'row ' + (role === 'user' ? 'user' : 'ai');
     if (role === 'user') {
-      const b = document.createElement('div');
-      b.className = 'ububble';
-      b.textContent = text;
-      r.append(b);
+      const col = document.createElement('div');
+      col.className = 'ucol';
+      if (files && files.length) {
+        const fw = document.createElement('div');
+        fw.className = 'ufiles';
+        files.forEach((f) => fw.append(attChip(f)));
+        col.append(fw);
+      }
+      if (text) {
+        const b = document.createElement('div');
+        b.className = 'ububble';
+        b.textContent = text;
+        col.append(b);
+      }
+      r.append(col);
       return r;
     }
     const av = document.createElement('div');
@@ -333,7 +404,12 @@
       cp.addEventListener('click', () => {
         navigator.clipboard.writeText(text).then(() => toast('Копирано'), () => toast('Неуспешно копиране'));
       });
-      acts.append(cp);
+      const bm = document.createElement('button');
+      bm.type = 'button';
+      bm.title = 'Запази в библиотеката';
+      bm.innerHTML = svg('bookmark');
+      bm.addEventListener('click', () => saveReply(text));
+      acts.append(cp, bm);
       c.append(acts);
     }
     r.append(av, c);
@@ -343,7 +419,7 @@
   function renderChat() {
     els.messages.innerHTML = '';
     const s = getActive();
-    if (s) s.messages.forEach((m) => els.messages.appendChild(row(m.role, m.content)));
+    if (s) s.messages.forEach((m) => els.messages.appendChild(row(m.role, m.content, false, m.files)));
     scrollToBottom(false);
   }
 
@@ -399,6 +475,7 @@
     layout();
     updateHero();
     updateProfile();
+    updatePluginsBadge();
   }
 
   /* ---------- Sessions ---------- */
@@ -426,9 +503,140 @@
     els.input.focus();
   }
 
+  /* ---------- Attachments (code/text files, images, video) ---------- */
+  const MAX_FILES = 5;
+  const MAX_TEXT_BYTES = 300 * 1024;
+  const MAX_TEXT_CHARS = 40000;
+  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+  const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+  const VIDEO_FRAMES = 4;
+  let pending = []; // files in the composer: {id, name, kind, status, text|dataUrl|frames, thumb, note}
+  let attSeq = 0;
+
+  function renderTray() {
+    els.attachTray.innerHTML = '';
+    pending.forEach((a) => els.attachTray.append(attChip(a, () => {
+      pending = pending.filter((x) => x !== a);
+      renderTray();
+      updateSend();
+    })));
+    els.attachTray.hidden = !pending.length;
+  }
+
+  function guessKind(f) {
+    if (/^image\//.test(f.type) || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(f.name)) return 'image';
+    if (/^video\//.test(f.type) || /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name)) return 'video';
+    return 'text';
+  }
+
+  function toJpeg(src, w, h, max, q) {
+    const k = Math.min(1, max / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * k));
+    c.height = Math.max(1, Math.round(h * k));
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', q);
+  }
+
+  function readText(file) {
+    return new Promise((ok, bad) => {
+      const r = new FileReader();
+      r.onload = () => ok(String(r.result));
+      r.onerror = () => bad(new Error('Файлът „' + file.name + '“ не може да се прочете'));
+      r.readAsText(file);
+    });
+  }
+
+  async function processImage(file, a) {
+    if (file.size > MAX_IMAGE_BYTES) throw new Error('Снимката е твърде голяма (макс. 25 MB)');
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      await new Promise((ok, bad) => {
+        img.onload = ok;
+        img.onerror = () => bad(new Error('Този формат снимка не се поддържа от браузъра'));
+        img.src = url;
+      });
+      const w = img.naturalWidth || 1;
+      const h = img.naturalHeight || 1;
+      a.dataUrl = toJpeg(img, w, h, 1280, 0.82);
+      a.thumb = toJpeg(img, w, h, 120, 0.7);
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  function seekTo(v, t) {
+    return new Promise((ok) => {
+      const timer = setTimeout(ok, 4000);
+      v.onseeked = () => { clearTimeout(timer); ok(); };
+      v.currentTime = t;
+    });
+  }
+
+  async function processVideo(file, a) {
+    if (file.size > MAX_VIDEO_BYTES) throw new Error('Видеото е твърде голямо (макс. 200 MB)');
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = 'auto';
+    try {
+      await new Promise((ok, bad) => {
+        v.onloadeddata = ok;
+        v.onerror = () => bad(new Error('Този формат видео не се поддържа от браузъра'));
+        v.src = url;
+      });
+      const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+      const w = v.videoWidth || 640;
+      const h = v.videoHeight || 360;
+      const frames = [];
+      for (let i = 0; i < VIDEO_FRAMES; i += 1) {
+        await seekTo(v, Math.max(0.05, dur ? (dur * (i + 0.5)) / VIDEO_FRAMES : 0.05));
+        frames.push(toJpeg(v, w, h, 768, 0.8));
+        if (i === 0) a.thumb = toJpeg(v, w, h, 120, 0.7);
+      }
+      a.frames = frames;
+      a.note = dur ? Math.round(dur) + ' сек.' : '';
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  async function processText(file, a) {
+    if (file.size > MAX_TEXT_BYTES) throw new Error('Файлът „' + file.name + '“ е твърде голям (макс. 300 KB)');
+    const t = await readText(file);
+    if (t.includes('\u0000')) throw new Error('„' + file.name + '“ не е текстов файл или код и не може да се прочете');
+    a.text = t.slice(0, MAX_TEXT_CHARS);
+    if (t.length > MAX_TEXT_CHARS) a.note = 'съкратен';
+  }
+
+  async function addFiles(list) {
+    const files = Array.from(list || []);
+    for (const f of files) {
+      if (pending.length >= MAX_FILES) { toast('Най-много ' + MAX_FILES + ' файла наведнъж'); break; }
+      const kind = guessKind(f);
+      if (kind === 'video' && pending.some((x) => x.kind === 'video')) { toast('Може да прикачиш само едно видео наведнъж'); continue; }
+      const a = { id: ++attSeq, name: f.name || 'файл', kind, status: 'loading' };
+      pending.push(a);
+      renderTray();
+      updateSend();
+      try {
+        if (kind === 'image') await processImage(f, a);
+        else if (kind === 'video') await processVideo(f, a);
+        else await processText(f, a);
+        a.status = 'ready';
+      } catch (e) {
+        pending = pending.filter((x) => x !== a);
+        toast(e.message || 'Файлът не може да се добави');
+      }
+      renderTray();
+      updateSend();
+    }
+  }
+
   /* ---------- Sending ---------- */
   function updateSend() {
-    els.sendBtn.disabled = busy || !els.input.value.trim();
+    els.sendBtn.disabled = busy || (!els.input.value.trim() && !pending.length);
   }
 
   function autoResize() {
@@ -445,26 +653,59 @@
     return r;
   }
 
+  // What the model should "remember" about an earlier message (text files stay, pictures become a note)
+  function historyContent(m) {
+    let c = m.content || '';
+    (m.files || []).forEach((f) => {
+      if (f.kind === 'text') c += '\n\nФайл „' + f.name + '“:\n```\n' + (f.text || '') + '\n```';
+      else c += '\n[Прикачено ' + (f.kind === 'video' ? 'видео' : 'изображение') + ': ' + f.name + ']';
+    });
+    return c.trim();
+  }
+
   async function send(raw) {
     const text = String(raw || '').trim();
-    if (busy || !text) return;
+    if (busy) return;
+    if (pending.some((a) => a.status === 'loading')) { toast('Изчакай файловете да се обработят'); return; }
+    const ready = pending.filter((a) => a.status === 'ready');
+    if (!text && !ready.length) return;
 
     let s = getActive();
     if (!s) s = newSession();
-    const history = s.messages.map((m) => ({ role: m.role, content: m.content }));
+    const history = s.messages.map((m) => ({ role: m.role, content: historyContent(m) })).filter((m) => m.content);
 
-    s.messages.push({ role: 'user', content: text });
-    if (s.title === 'Нов чат') s.title = text.length > 36 ? text.slice(0, 36) + '…' : text;
+    const files = ready.map((a) => {
+      const f = { name: a.name, kind: a.kind };
+      if (a.kind === 'text') f.text = a.text;
+      if (a.thumb) f.thumb = a.thumb;
+      if (a.note) f.note = a.note;
+      return f;
+    });
+    const attachments = ready.map((a) => {
+      if (a.kind === 'text') return { kind: 'text', name: a.name, text: a.text };
+      if (a.kind === 'image') return { kind: 'image', name: a.name, dataUrl: a.dataUrl };
+      return { kind: 'video', name: a.name, frames: a.frames };
+    });
+
+    const msg = { role: 'user', content: text };
+    if (files.length) msg.files = files;
+    s.messages.push(msg);
+    if (s.title === 'Нов чат') {
+      const base = text || (files[0] ? files[0].name : 'Нов чат');
+      s.title = base.length > 36 ? base.slice(0, 36) + '…' : base;
+    }
     s.updated = Date.now();
     save();
 
     els.input.value = '';
+    pending = [];
+    renderTray();
     autoResize();
     busy = true;
     updateSend();
     layout();
     renderSidebar();
-    els.messages.appendChild(row('user', text));
+    els.messages.appendChild(row('user', text, false, files));
     const typing = showTyping();
     const sid = s.id;
 
@@ -474,15 +715,17 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text,
+          attachments,
           history,
           mode: state.mode,
           effort: state.effort,
+          plugins: state.plugins,
           instructions: state.profile.instructions,
           userName: state.profile.name === 'Гост' ? '' : state.profile.name,
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Грешка при заявката (' + res.status + ')');
+      if (!res.ok) throw new Error(data.error || (res.status === 413 ? 'Файловете са твърде големи за изпращане' : 'Грешка при заявката (' + res.status + ')'));
 
       s.messages.push({ role: 'assistant', content: data.reply });
       s.updated = Date.now();
@@ -520,28 +763,43 @@
     toggleMenu(els.plusMenu, () => {
       els.plusMenu.innerHTML = '';
       els.plusMenu.append(
-        menuItem('clip', 'Прикачи текстов файл', () => els.fileInput.click()),
-        menuItem('trash', 'Изчисти полето', () => { els.input.value = ''; autoResize(); updateSend(); })
+        menuItem('clip', 'Прикачи файл, снимка или видео', () => els.fileInput.click()),
+        menuItem('trash', 'Изчисти полето', () => {
+          els.input.value = '';
+          pending = [];
+          renderTray();
+          autoResize();
+          updateSend();
+        })
       );
     });
   });
 
   els.fileInput.addEventListener('change', () => {
-    const f = els.fileInput.files[0];
+    const list = Array.from(els.fileInput.files || []);
     els.fileInput.value = '';
-    if (!f) return;
-    if (f.size > 200 * 1024) { toast('Файлът е твърде голям (макс. 200 KB)'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const body = String(reader.result).slice(0, 9000);
-      els.input.value = (els.input.value ? els.input.value + '\n\n' : '') + `Файл „${f.name}“:\n\`\`\`\n${body}\n\`\`\`\n`;
-      autoResize();
-      updateSend();
-      els.input.focus();
-      toast('Файлът е добавен към съобщението');
-    };
-    reader.onerror = () => toast('Файлът не може да се прочете');
-    reader.readAsText(f);
+    addFiles(list);
+  });
+
+  // Paste a screenshot / drag & drop files onto the composer
+  els.input.addEventListener('paste', (e) => {
+    const fs = e.clipboardData && e.clipboardData.files;
+    if (fs && fs.length) { e.preventDefault(); addFiles(fs); }
+  });
+  ['dragenter', 'dragover'].forEach((ev) => els.composerWrap.addEventListener(ev, (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+      e.preventDefault();
+      els.composerWrap.classList.add('drag');
+    }
+  }));
+  els.composerWrap.addEventListener('dragleave', (e) => {
+    if (!els.composerWrap.contains(e.relatedTarget)) els.composerWrap.classList.remove('drag');
+  });
+  els.composerWrap.addEventListener('drop', (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    els.composerWrap.classList.remove('drag');
+    addFiles(e.dataTransfer.files);
   });
 
   const EFFORTS = [['low', 'Low', 'Кратки и бързи отговори'], ['medium', 'Medium', 'Балансиран отговор'], ['high', 'High', 'Подробни, задълбочени отговори']];
@@ -599,6 +857,208 @@
   });
 
   els.newChat.addEventListener('click', startNewChat);
+
+  /* ---------- Library, Plugins, Browse ---------- */
+  const fmtDate = (ts) => new Date(ts).toLocaleDateString('bg-BG', { day: 'numeric', month: 'short', year: 'numeric' });
+  const closeModal = (node) => { const ov = node.closest('.overlay'); if (ov) ov.remove(); };
+
+  function libraryModal() {
+    let tab = 'files';
+    const body = document.createElement('div');
+    const tabs = document.createElement('div');
+    tabs.className = 'tabs';
+    const tFiles = mkBtn('Файлове', 'tab', () => setTab('files'));
+    const tSaved = mkBtn('Запазени отговори', 'tab', () => setTab('saved'));
+    tabs.append(tFiles, tSaved);
+    const list = document.createElement('div');
+    list.className = 'scroll';
+    list.style.marginTop = '12px';
+    body.append(tabs, list);
+
+    function emptyNote(t) {
+      const d = document.createElement('div');
+      d.className = 'empty-note';
+      d.textContent = t;
+      return d;
+    }
+
+    function renderFiles() {
+      const items = [];
+      state.sessions.filter((x) => !x.temp).forEach((x) => x.messages.forEach((m) => (m.files || []).forEach((f) => items.push({ f, s: x }))));
+      items.sort((a, b) => (b.s.updated || 0) - (a.s.updated || 0));
+      if (!items.length) { list.append(emptyNote('Още няма файлове. Прикачените в чатовете файлове, снимки и видеа ще се появят тук.')); return; }
+      items.forEach(({ f, s: sess }) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'item';
+        if (f.thumb) { const im = document.createElement('img'); im.className = 'thumb'; im.alt = ''; im.src = f.thumb; b.append(im); }
+        else { const ic = document.createElement('span'); ic.className = 'ficon'; ic.innerHTML = svg(KIND_ICON[f.kind] || 'file'); b.append(ic); }
+        const info = document.createElement('span');
+        info.className = 'info';
+        const t = document.createElement('b');
+        t.textContent = f.name;
+        const sm = document.createElement('small');
+        sm.textContent = (KIND_LABEL[f.kind] || 'Файл') + ' · ' + sess.title + ' · ' + fmtDate(sess.updated);
+        info.append(t, sm);
+        b.append(info);
+        b.addEventListener('click', () => { closeModal(body); selectSession(sess.id); });
+        list.append(b);
+      });
+    }
+
+    function renderSaved() {
+      if (!state.saved.length) { list.append(emptyNote('Още няма запазени отговори. Натисни иконата с отметка под отговор на TitanAI, за да го запазиш тук.')); return; }
+      state.saved.forEach((it) => {
+        const d = document.createElement('div');
+        d.className = 'item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const t = document.createElement('b');
+        t.textContent = it.title || 'Отговор';
+        const sm = document.createElement('small');
+        sm.textContent = fmtDate(it.ts);
+        const p = document.createElement('p');
+        const short = it.text.length > 180 ? it.text.slice(0, 180) + '…' : it.text;
+        let open = false;
+        p.textContent = short;
+        info.style.cursor = 'pointer';
+        info.addEventListener('click', () => { open = !open; p.textContent = open ? it.text : short; });
+        info.append(t, sm, p);
+        const btns = document.createElement('div');
+        btns.className = 'btns';
+        const cp = document.createElement('button');
+        cp.type = 'button'; cp.title = 'Копирай'; cp.innerHTML = svg('copy');
+        cp.addEventListener('click', () => navigator.clipboard.writeText(it.text).then(() => toast('Копирано'), () => toast('Неуспешно копиране')));
+        const del = document.createElement('button');
+        del.type = 'button'; del.title = 'Премахни'; del.innerHTML = svg('trash');
+        del.addEventListener('click', () => { state.saved = state.saved.filter((x) => x.id !== it.id); save(); setTab('saved'); });
+        btns.append(cp, del);
+        d.append(info, btns);
+        list.append(d);
+      });
+    }
+
+    function setTab(t) {
+      tab = t;
+      tFiles.classList.toggle('on', t === 'files');
+      tSaved.classList.toggle('on', t === 'saved');
+      list.innerHTML = '';
+      if (tab === 'files') renderFiles(); else renderSaved();
+    }
+
+    modal('Библиотека', body, { cancel: 'Затвори', wide: true });
+    setTab('files');
+  }
+
+  const PLUGINS = [
+    ['coder', 'Кодер', 'Намира грешки и пише чист, коментиран код.', 'code'],
+    ['translator', 'Преводач', 'Превежда текстове (по подразбиране между български и английски).', 'book'],
+    ['writer', 'Писател', 'Помага с имейли, есета и постове и ги редактира.', 'edit'],
+    ['summarizer', 'Обобщител', 'Прави кратко резюме и ключови точки от дълги текстове.', 'library'],
+    ['teacher', 'Учител', 'Обяснява стъпка по стъпка, с пример и въпрос за проверка.', 'sparkle'],
+    ['analyst', 'Анализатор', 'Сравнява варианти, плюсове и минуси и дава препоръка.', 'sliders'],
+  ];
+
+  function updatePluginsBadge() {
+    const n = state.plugins.length;
+    els.pluginsBadge.hidden = !n;
+    els.pluginsBadge.textContent = n;
+  }
+
+  function pluginsModal() {
+    const body = document.createElement('div');
+    const sub = document.createElement('p');
+    sub.className = 'sub';
+    sub.textContent = 'Включените плъгини влияят на всички следващи отговори на TitanAI.';
+    const list = document.createElement('div');
+    list.className = 'scroll';
+    PLUGINS.forEach(([id, name, desc, icon]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'item' + (state.plugins.includes(id) ? ' on' : '');
+      b.innerHTML = `<span class="ficon">${svg(icon)}</span><span class="info"><b></b><small></small></span><span class="switch"></span>`;
+      b.querySelector('b').textContent = name;
+      b.querySelector('small').textContent = desc;
+      b.addEventListener('click', () => {
+        const on = !state.plugins.includes(id);
+        state.plugins = on ? [...state.plugins, id] : state.plugins.filter((x) => x !== id);
+        b.classList.toggle('on', on);
+        save();
+        updatePluginsBadge();
+      });
+      list.append(b);
+    });
+    body.append(sub, list);
+    modal('Плъгини', body, { cancel: 'Готово', wide: true });
+  }
+
+  const BROWSE = [
+    ['Писане', [
+      'Напиши учтив имейл до колега, в който моля за удължаване на срока',
+      'Преработи този текст, за да звучи по-професионално: ',
+      'Измисли 5 заглавия за публикация на тема: ',
+    ]],
+    ['Код', [
+      'Обясни ми този код ред по ред: ',
+      'Намери грешката в този код и ми покажи поправка: ',
+      'Напиши функция на JavaScript, която ',
+      'Как мога да оптимизирам тази SQL заявка? ',
+    ]],
+    ['Учене', [
+      'Обясни ми как работи фотосинтезата с прости думи',
+      'Направи ми план за учене на английски за 30 дни',
+      'Изпитай ме с 5 въпроса по темата: ',
+    ]],
+    ['Работа', [
+      'Направи ми план за седмицата по приоритети: ',
+      'Обобщи този текст в 5 ключови точки: ',
+      'Напиши шаблон за седмичен отчет към шефа',
+    ]],
+    ['Идеи', [
+      'Предложи ми 10 идеи за подарък за ',
+      'Измисли име за проект, който ',
+      'Какво мога да сготвя със следните продукти: ',
+    ]],
+  ];
+
+  function browseModal() {
+    const body = document.createElement('div');
+    const sub = document.createElement('p');
+    sub.className = 'sub';
+    sub.textContent = 'Избери идея и тя ще се появи в полето за съобщение — можеш да я допълниш преди изпращане.';
+    const list = document.createElement('div');
+    list.className = 'scroll';
+    BROWSE.forEach(([cat, prompts]) => {
+      const h = document.createElement('div');
+      h.className = 'cat';
+      h.textContent = cat;
+      list.append(h);
+      prompts.forEach((p) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'item';
+        b.innerHTML = `<span class="info"><b style="white-space:normal"></b></span>`;
+        b.querySelector('b').textContent = p.trim();
+        b.addEventListener('click', () => {
+          closeModal(body);
+          if (busy) { toast('Изчакай отговора на TitanAI'); return; }
+          startNewChat();
+          els.input.value = p;
+          autoResize();
+          updateSend();
+          els.input.focus();
+          els.input.setSelectionRange(p.length, p.length);
+        });
+        list.append(b);
+      });
+    });
+    body.append(sub, list);
+    modal('Разглеждане', body, { cancel: 'Затвори', wide: true });
+  }
+
+  els.libraryBtn.addEventListener('click', libraryModal);
+  els.pluginsBtn.addEventListener('click', pluginsModal);
+  els.browseBtn.addEventListener('click', browseModal);
 
   document.querySelectorAll('[data-soon]').forEach((b) => {
     b.addEventListener('click', () => toast(b.dataset.soon + ' — скоро'));
@@ -725,7 +1185,8 @@
   function helpModal() {
     modal('Помощ', textBlock(
       '<ul><li><b>Enter</b> — изпраща съобщението, <b>Shift+Enter</b> — нов ред.</li>' +
-      '<li><b>+</b> — прикачва текстов файл към съобщението.</li>' +
+      '<li><b>+</b> — прикачва файл с код или текст, снимка или видео (може и с влачене или поставяне на снимка).</li>' +
+      '<li><b>Плъгини</b> — включват специални умения; <b>Библиотека</b> — файловете и запазените отговори; <b>Разглеждане</b> — готови идеи.</li>' +
       '<li><b>Low / Medium / High</b> — колко подробен да е отговорът.</li>' +
       '<li><b>Chat / Work</b> — свободен разговор или работен режим.</li>' +
       '<li>Иконата горе вдясно пуска <b>временен чат</b>, който не се запазва.</li></ul>'
@@ -835,6 +1296,8 @@
       const hasRemote = remote && Array.isArray(remote.sessions);
       if (hasRemote) {
         state.sessions = remote.sessions;
+        state.saved = Array.isArray(remote.saved) ? remote.saved : state.saved;
+        state.plugins = Array.isArray(remote.plugins) ? remote.plugins : state.plugins;
         state.profile = { ...state.profile, ...(remote.profile || {}) };
         state.effort = remote.effort || state.effort;
         state.mode = remote.mode || state.mode;
