@@ -7,7 +7,15 @@ const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash:free';
+
+// Models are tried in order; if one is unavailable or rate-limited, the next is used.
+// Override on Render with OPENROUTER_MODEL (comma-separated list), e.g.:
+//   OPENROUTER_MODEL=google/gemini-3.8-flash
+const MODELS = (process.env.OPENROUTER_MODEL || 'apodex/apodex-1.1-mini:free,inclusionai/ling-3.1-flash')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+const FALLBACK_STATUSES = [400, 402, 404, 408, 429, 500, 502, 503, 504];
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 const SYSTEM_PROMPT =
@@ -87,6 +95,22 @@ function sanitizeHistory(history) {
     .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_MESSAGE_LEN) }));
 }
 
+function callModel(model, messages) {
+  return axios.post(
+    OPENROUTER_URL,
+    { model, messages },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.APP_URL || `http://localhost:${PORT}`,
+        'X-Title': 'TitanAI',
+      },
+      timeout: 60000,
+    }
+  );
+}
+
 app.post('/api/chat', rateLimit, async (req, res) => {
   const { message, history, mode, effort, instructions, userName } = req.body || {};
 
@@ -103,38 +127,34 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     { role: 'user', content: message.slice(0, MAX_MESSAGE_LEN) },
   ];
 
-  try {
-    const response = await axios.post(
-      OPENROUTER_URL,
-      { model: MODEL, messages },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': process.env.APP_URL || `http://localhost:${PORT}`,
-          'X-Title': 'TitanAI',
-        },
-        timeout: 60000,
-      }
-    );
+  let lastStatus = 500;
+  let lastDetail = 'Unknown error';
 
-    const reply = response.data?.choices?.[0]?.message?.content;
-    if (!reply) {
-      return res.status(502).json({ error: 'Empty response from the model.' });
+  for (let i = 0; i < MODELS.length; i += 1) {
+    const model = MODELS[i];
+    try {
+      const response = await callModel(model, messages);
+      const reply = response.data?.choices?.[0]?.message?.content;
+      if (reply && reply.trim()) {
+        return res.json({ reply, model });
+      }
+      lastStatus = 502;
+      lastDetail = `Empty response from ${model}.`;
+    } catch (err) {
+      lastStatus = err.response?.status || 500;
+      lastDetail = err.response?.data?.error?.message || err.message;
+      console.error(`OpenRouter error (${model}):`, lastStatus, lastDetail);
+      if (!FALLBACK_STATUSES.includes(lastStatus) && err.response) break;
     }
-    res.json({ reply });
-  } catch (err) {
-    const status = err.response?.status || 500;
-    const detail = err.response?.data?.error?.message || err.message;
-    console.error('OpenRouter error:', status, detail);
-    res.status(status >= 400 && status < 600 ? status : 500).json({
-      error: 'TitanAI could not get a response. ' + detail,
-    });
   }
+
+  res.status(lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502).json({
+    error: 'TitanAI could not get a response. ' + lastDetail,
+  });
 });
 
 app.use((req, res) => res.status(404).json({ error: 'Not found.' }));
 
 app.listen(PORT, () => {
-  console.log(`TitanAI is running on port ${PORT}`);
+  console.log(`TitanAI is running on port ${PORT} (models: ${MODELS.join(', ')})`);
 });
