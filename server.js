@@ -58,11 +58,23 @@ const PLUGIN_HINTS = {
   teacher:
     'Plugin "Teacher" is active: explain step by step with simple words and a concrete example, ' +
     'then finish with a short check question.',
+  imageprompt:
+    'Plugin "Image prompt" is active: when the user describes a picture, logo or scene (or shares a reference image), ' +
+    'reply with a short explanation of the visual idea and then 2 ready-to-paste prompts in English for an image ' +
+    'generator such as Midjourney (subject, style, lighting, composition, colors, aspect ratio like --ar 16:9), ' +
+    'each in its own fenced code block. You cannot generate images yourself, so do not claim to.',
+  designer:
+    'Plugin "Designer" is active: suggest color palettes (always give HEX codes written like `#1a2b3c`), typography, ' +
+    'layout and composition ideas, and when useful provide small, working CSS/SVG snippets in fenced code blocks.',
+  reviewer:
+    'Plugin "Code reviewer" is active: when code is shared, review it carefully for bugs, edge cases, security issues ' +
+    'and performance problems BEFORE suggesting anything. List each risk with the line or function, why it can break, ' +
+    'and a fix. You only read and reason about the code, you cannot run it, so say when something needs real testing.',
   analyst:
     'Plugin "Analyst" is active: compare options, list pros and cons, point out risks and end with a clear recommendation.',
 };
 
-function buildSystemPrompt({ mode, effort, instructions, userName, plugins }) {
+function buildSystemPrompt({ mode, effort, instructions, userName, plugins, notes }) {
   const parts = [SYSTEM_PROMPT];
   if (MODE_HINTS[mode]) parts.push(MODE_HINTS[mode]);
   (Array.isArray(plugins) ? plugins : [])
@@ -73,12 +85,21 @@ function buildSystemPrompt({ mode, effort, instructions, userName, plugins }) {
   if (typeof userName === 'string' && userName.trim()) {
     parts.push(`The user's name is ${userName.trim().slice(0, 60)}.`);
   }
+  const noteList = (Array.isArray(notes) ? notes : [])
+    .filter((n) => typeof n === 'string' && n.trim())
+    .slice(0, MAX_NOTES)
+    .map((n) => '- ' + n.trim().slice(0, MAX_NOTE_LEN));
+  if (noteList.length) {
+    parts.push('Notes the user asked you to remember about them (use them when relevant, do not repeat them unprompted):\n' + noteList.join('\n'));
+  }
   if (typeof instructions === 'string' && instructions.trim()) {
     parts.push('Custom instructions from the user: ' + instructions.trim().slice(0, 1000));
   }
   return parts.join(' ');
 }
 
+const MAX_NOTES = 40;
+const MAX_NOTE_LEN = 300;
 const MAX_MESSAGE_LEN = 12000;
 const MAX_HISTORY = 20;
 const MAX_HISTORY_MSG = 45000;     // a history message may contain an attached text file
@@ -438,11 +459,20 @@ function cleanData(d) {
       text: x.text.slice(0, 20000),
       ts: Number(x.ts) || Date.now(),
     }));
+  const notes = (Array.isArray(d.notes) ? d.notes : [])
+    .slice(0, MAX_NOTES)
+    .filter((x) => x && typeof x.text === 'string' && x.text.trim())
+    .map((x) => ({
+      id: String(x.id || Date.now()).slice(0, 64),
+      text: x.text.trim().slice(0, MAX_NOTE_LEN),
+      ts: Number(x.ts) || Date.now(),
+    }));
   const plugins = (Array.isArray(d.plugins) ? d.plugins : []).filter((p) => PLUGIN_IDS.includes(p));
   const p = d.profile && typeof d.profile === 'object' ? d.profile : {};
   return {
     sessions,
     saved,
+    notes,
     plugins: [...new Set(plugins)],
     profile: { name: String(p.name || '').slice(0, 40), instructions: String(p.instructions || '').slice(0, 1000) },
     effort: ['low', 'medium', 'high'].includes(d.effort) ? d.effort : 'medium',
@@ -557,8 +587,155 @@ function callModel(model, messages) {
   );
 }
 
+/* STREAM-START */
+const { StringDecoder } = require('string_decoder');
+
+function readErrBody(err) {
+  const d = err.response && err.response.data;
+  if (!d || typeof d.on !== 'function') {
+    return Promise.resolve((d && d.error && d.error.message) || err.message);
+  }
+  return new Promise((resolve) => {
+    let b = '';
+    const done = () => {
+      clearTimeout(t);
+      try {
+        resolve(JSON.parse(b).error.message || err.message);
+      } catch (e) {
+        resolve(b.slice(0, 300) || err.message);
+      }
+    };
+    const t = setTimeout(done, 3000);
+    d.on('data', (c) => { b += c; if (b.length > 4000) d.destroy(); });
+    d.on('end', done);
+    d.on('close', done);
+    d.on('error', done);
+  });
+}
+
+// Streams one model's answer to the browser as Server-Sent Events: data: {"t":"text"} ... data: {"done":true}
+// Rejects (so the caller can try the next model) only if nothing has been sent to the browser yet.
+async function streamModel(model, messages, res, http = axios) {
+  let upstream;
+  try {
+    upstream = await http.post(
+      OPENROUTER_URL,
+      { model, messages, stream: true },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': process.env.APP_URL || `http://localhost:${PORT}`,
+          'X-Title': 'TitanAI',
+        },
+        timeout: 60000,
+        responseType: 'stream',
+      }
+    );
+  } catch (err) {
+    const e = new Error(await readErrBody(err));
+    e.status = (err.response && err.response.status) || 500;
+    e.hasResponse = !!err.response;
+    throw e;
+  }
+
+  const stream = upstream.data;
+  const decoder = new StringDecoder('utf8');
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    let started = false;
+    let finished = false;
+    let idle = null;
+
+    const start = () => {
+      if (started) return;
+      started = true;
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+      });
+    };
+    const send = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
+    const stop = () => { finished = true; clearTimeout(idle); };
+
+    const fail = (status, detail) => {
+      if (finished) return;
+      stop();
+      stream.destroy();
+      if (started) {
+        send({ error: detail });
+        res.end();
+        resolve({ started: true });
+      } else {
+        const e = new Error(detail);
+        e.status = status;
+        reject(e);
+      }
+    };
+    const complete = () => {
+      if (finished) return;
+      stop();
+      stream.destroy();
+      if (started) {
+        send({ done: true });
+        res.end();
+        resolve({ started: true });
+      } else {
+        const e = new Error(`Empty response from ${model}.`);
+        e.status = 502;
+        reject(e);
+      }
+    };
+    const bump = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => fail(504, 'Моделът не отговаря (изтекло време).'), 60000);
+    };
+    const handleLine = (line) => {
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (!payload) return;
+      if (payload === '[DONE]') { complete(); return; }
+      let j;
+      try { j = JSON.parse(payload); } catch (e) { return; }
+      if (j.error) { fail(Number(j.error.code) || 502, j.error.message || 'Model error'); return; }
+      const t = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+      if (typeof t === 'string' && t) {
+        start();
+        send({ t });
+      }
+    };
+
+    res.on('close', () => {
+      if (finished) return;
+      stop();
+      stream.destroy();
+      resolve({ started: true, aborted: true }); // the browser went away
+    });
+    stream.on('data', (chunk) => {
+      bump();
+      buf += decoder.write(chunk);
+      let i = buf.indexOf('\n');
+      while (i >= 0 && !finished) {
+        const line = buf.slice(0, i).replace(/\r$/, '');
+        buf = buf.slice(i + 1);
+        handleLine(line);
+        i = buf.indexOf('\n');
+      }
+    });
+    stream.on('end', () => {
+      if (!finished && buf.trim()) handleLine(buf.trim());
+      complete();
+    });
+    stream.on('error', (e) => fail(502, e.message));
+    bump();
+  });
+}
+/* STREAM-END */
+
 app.post('/api/chat', limiter('chat', 20), async (req, res) => {
-  const { message, history, mode, effort, instructions, userName, plugins, attachments } = req.body || {};
+  const { message, history, mode, effort, instructions, userName, plugins, attachments, notes, stream } = req.body || {};
+  const wantStream = stream === true;
 
   const user = buildUserContent(message, attachments);
   const empty = Array.isArray(user.content) ? !user.content.length : !user.content;
@@ -570,7 +747,7 @@ app.post('/api/chat', limiter('chat', 20), async (req, res) => {
   }
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt({ mode, effort, instructions, userName, plugins }) },
+    { role: 'system', content: buildSystemPrompt({ mode, effort, instructions, userName, plugins, notes }) },
     ...sanitizeHistory(history),
     { role: 'user', content: user.content },
   ];
@@ -583,20 +760,25 @@ app.post('/api/chat', limiter('chat', 20), async (req, res) => {
   for (let i = 0; i < candidates.length; i += 1) {
     const model = candidates[i];
     try {
-      const response = await callModel(model, messages);
-      const reply = response.data?.choices?.[0]?.message?.content;
-      if (reply && reply.trim()) {
-        return res.json({ reply, model });
+      if (wantStream) {
+        const r = await streamModel(model, messages, res);
+        if (r) return;
+      } else {
+        const response = await callModel(model, messages);
+        const reply = response.data?.choices?.[0]?.message?.content;
+        if (reply && reply.trim()) {
+          return res.json({ reply, model });
+        }
+        lastStatus = 502;
+        lastDetail = `Empty response from ${model}.`;
+        failures.push(lastDetail);
       }
-      lastStatus = 502;
-      lastDetail = `Empty response from ${model}.`;
-      failures.push(lastDetail);
     } catch (err) {
-      lastStatus = err.response?.status || 500;
+      lastStatus = err.response?.status || err.status || 500;
       lastDetail = err.response?.data?.error?.message || err.message;
       console.error(`OpenRouter error (${model}):`, lastStatus, lastDetail);
       failures.push(`${model} -> ${lastStatus}: ${lastDetail}`);
-      if (!FALLBACK_STATUSES.includes(lastStatus) && err.response) break;
+      if (!FALLBACK_STATUSES.includes(lastStatus) && (err.response || err.hasResponse)) break;
     }
   }
 

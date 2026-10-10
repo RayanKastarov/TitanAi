@@ -55,7 +55,7 @@
 
   /* ---------- State ---------- */
   function load() {
-    const base = { sessions: [], saved: [], plugins: [], profile: { name: 'Гост', plan: 'Безплатен', instructions: '' }, effort: 'medium', mode: 'chat', pinnedOpen: true };
+    const base = { sessions: [], saved: [], notes: [], plugins: [], profile: { name: 'Гост', plan: 'Безплатен', instructions: '' }, effort: 'medium', mode: 'chat', pinnedOpen: true };
     try {
       const d = JSON.parse(localStorage.getItem(KEY));
       if (d && typeof d === 'object') {
@@ -65,6 +65,7 @@
           profile: { ...base.profile, ...(d.profile || {}) },
           sessions: Array.isArray(d.sessions) ? d.sessions : [],
           saved: Array.isArray(d.saved) ? d.saved : [],
+          notes: Array.isArray(d.notes) ? d.notes : [],
           plugins: Array.isArray(d.plugins) ? d.plugins : [],
         };
       }
@@ -222,6 +223,7 @@
       return `\u0000${blocks.length - 1}\u0000`;
     });
     t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/<code>(#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3}))<\/code>/g, '<span class="sw" style="background:$1"></span><code>$1</code>');
     let html = '';
     let list = null;
     const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
@@ -365,6 +367,141 @@
     toast('Запазено в библиотеката');
   }
 
+  /* ---------- Save a reply as a picture (for social posts) ---------- */
+  function replyBlocks(src) {
+    const blocks = [];
+    const parts = String(src).split(/```[\w-]*\n?/);
+    parts.forEach((part, i) => {
+      if (i % 2 === 1) { blocks.push({ type: 'code', text: part.replace(/\n$/, '') }); return; }
+      part.split('\n').forEach((raw) => {
+        const line = raw.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1');
+        let m;
+        if (!line.trim()) blocks.push({ type: 'gap' });
+        else if ((m = line.match(/^#{1,4}\s+(.*)/))) blocks.push({ type: 'h', text: m[1] });
+        else if ((m = line.match(/^\s*[-*]\s+(.*)/))) blocks.push({ type: 'li', text: '• ' + m[1] });
+        else if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)/))) blocks.push({ type: 'li', text: m[1] + '. ' + m[2] });
+        else blocks.push({ type: 'p', text: line });
+      });
+    });
+    return blocks;
+  }
+
+  function exportImage(text) {
+    const W = 1080;
+    const PAD = 72;
+    const MAXH = 5200;
+    const sans = (w, sz) => `${w} ${sz}px "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif`;
+    const MONO = '26px Consolas, "SF Mono", monospace';
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = 10;
+    const g = c.getContext('2d');
+    const maxW = W - PAD * 2;
+
+    const wrap = (str, font, width) => {
+      g.font = font;
+      const out = [];
+      let line = '';
+      const push = (w) => {
+        const test = line ? line + ' ' + w : w;
+        if (g.measureText(test).width <= width) { line = test; return; }
+        if (line) out.push(line);
+        line = '';
+        if (g.measureText(w).width <= width) { line = w; return; }
+        let chunk = '';
+        for (const ch of w) {
+          if (g.measureText(chunk + ch).width > width) { out.push(chunk); chunk = ''; }
+          chunk += ch;
+        }
+        line = chunk;
+      };
+      String(str).split(/\s+/).filter(Boolean).forEach(push);
+      if (line) out.push(line);
+      return out.length ? out : [''];
+    };
+
+    const ops = [];
+    let y = PAD + 76; // below the header
+    let cut = false;
+    for (const b of replyBlocks(text)) {
+      if (y > MAXH) { cut = true; break; }
+      if (b.type === 'gap') { y += 14; continue; }
+      if (b.type === 'code') {
+        const lines = b.text.split('\n').flatMap((l) => wrap(l.replace(/\t/g, '  ') || ' ', MONO, maxW - 48));
+        const h = lines.length * 38 + 36;
+        ops.push({ k: 'rect', x: PAD, y, w: maxW, h, color: '#111113', r: 18 });
+        lines.forEach((l, i) => ops.push({ k: 'text', x: PAD + 24, y: y + 18 + 28 + i * 38 - 6, s: l, font: MONO, color: '#d9dce1' }));
+        y += h + 18;
+        continue;
+      }
+      const isH = b.type === 'h';
+      const font = isH ? sans('700', 38) : sans('400', 32);
+      const lh = isH ? 56 : 48;
+      const ind = b.type === 'li' ? 0 : 0;
+      wrap(b.text, font, maxW - ind).forEach((l) => {
+        ops.push({ k: 'text', x: PAD + ind, y: y + lh - 14, s: l, font, color: isH ? '#ffffff' : '#e6e7ea' });
+        y += lh;
+      });
+      y += isH ? 6 : 8;
+    }
+    if (cut) { ops.push({ k: 'text', x: PAD, y: y + 34, s: '…', font: sans('400', 32), color: '#8e8e95' }); y += 48; }
+
+    const H = Math.round(y + 56 + PAD);
+    c.width = W;
+    c.height = H;
+    const bg = g.createLinearGradient(0, 0, W, H);
+    bg.addColorStop(0, '#0b0b0c');
+    bg.addColorStop(1, '#1a1b22');
+    g.fillStyle = bg;
+    g.fillRect(0, 0, W, H);
+
+    // header: logo badge + name
+    const badge = g.createLinearGradient(PAD, PAD, PAD + 52, PAD + 52);
+    badge.addColorStop(0, '#f6f7f9');
+    badge.addColorStop(1, '#9a9ea6');
+    g.fillStyle = badge;
+    g.beginPath();
+    g.arc(PAD + 26, PAD + 26, 26, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#111';
+    g.font = sans('800', 30);
+    g.textAlign = 'center';
+    g.fillText('T', PAD + 26, PAD + 37);
+    g.textAlign = 'left';
+    g.fillStyle = '#f4f5f7';
+    g.font = sans('700', 34);
+    g.fillText('TitanAI', PAD + 70, PAD + 38);
+
+    ops.forEach((o) => {
+      if (o.k === 'rect') {
+        g.fillStyle = o.color;
+        g.beginPath();
+        if (g.roundRect) g.roundRect(o.x, o.y, o.w, o.h, o.r); else g.rect(o.x, o.y, o.w, o.h);
+        g.fill();
+      } else {
+        g.font = o.font;
+        g.fillStyle = o.color;
+        g.fillText(o.s, o.x, o.y);
+      }
+    });
+
+    g.fillStyle = '#6b6b72';
+    g.font = sans('400', 24);
+    g.fillText('Създадено с TitanAI', PAD, H - PAD + 6);
+
+    c.toBlob((blob) => {
+      if (!blob) { toast('Картинката не можа да се създаде'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'titanai-' + Date.now() + '.png';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      toast('Картинката е запазена');
+    }, 'image/png');
+  }
+
   function row(role, text, isErr, files) {
     const r = document.createElement('div');
     r.className = 'row ' + (role === 'user' ? 'user' : 'ai');
@@ -409,7 +546,12 @@
       bm.title = 'Запази в библиотеката';
       bm.innerHTML = svg('bookmark');
       bm.addEventListener('click', () => saveReply(text));
-      acts.append(cp, bm);
+      const im = document.createElement('button');
+      im.type = 'button';
+      im.title = 'Запази като картинка';
+      im.innerHTML = svg('image');
+      im.addEventListener('click', () => exportImage(text));
+      acts.append(cp, bm, im);
       c.append(acts);
     }
     r.append(av, c);
@@ -670,6 +812,10 @@
     const ready = pending.filter((a) => a.status === 'ready');
     if (!text && !ready.length) return;
 
+    // "запомни: ..." saves a note in Memory
+    const rm = text.match(/^запомни(?:,?\s+че)?\s*[:,]?\s+([\s\S]{2,})$/i);
+    if (rm && addNote(rm[1])) toast('Запомних го в Паметта');
+
     let s = getActive();
     if (!s) s = newSession();
     const history = s.messages.map((m) => ({ role: m.role, content: historyContent(m) })).filter((m) => m.content);
@@ -720,19 +866,78 @@
           mode: state.mode,
           effort: state.effort,
           plugins: state.plugins,
+          notes: state.notes.map((n) => n.text),
+          stream: true,
           instructions: state.profile.instructions,
           userName: state.profile.name === 'Гост' ? '' : state.profile.name,
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || (res.status === 413 ? 'Файловете са твърде големи за изпращане' : 'Грешка при заявката (' + res.status + ')'));
+      const ct = res.headers.get('content-type') || '';
+      let reply = '';
+      let live = null;
 
-      s.messages.push({ role: 'assistant', content: data.reply });
+      if (res.ok && ct.includes('text/event-stream') && res.body) {
+        // Answer arrives piece by piece: show it as it comes
+        let contentEl = null;
+        let raf = 0;
+        let streamErr = '';
+        const paint = () => {
+          raf = 0;
+          if (!contentEl) return;
+          const near = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 140;
+          contentEl.innerHTML = md(reply);
+          if (near) scrollToBottom(false);
+        };
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i = buf.indexOf('\n\n');
+            while (i >= 0) {
+              const block = buf.slice(0, i);
+              buf = buf.slice(i + 2);
+              i = buf.indexOf('\n\n');
+              const line = block.split('\n').find((l) => l.startsWith('data:'));
+              if (!line) continue;
+              let ev;
+              try { ev = JSON.parse(line.slice(5)); } catch (e) { continue; }
+              if (ev.t) {
+                reply += ev.t;
+                if (!live && activeId === sid) {
+                  typing.remove();
+                  live = row('assistant', null);
+                  contentEl = live.querySelector('.content');
+                  els.messages.appendChild(live);
+                }
+                if (!raf) raf = requestAnimationFrame(paint);
+              } else if (ev.error) {
+                streamErr = String(ev.error);
+              }
+            }
+          }
+        } catch (e) {
+          streamErr = streamErr || 'връзката прекъсна';
+        }
+        if (raf) cancelAnimationFrame(raf);
+        if (!reply) throw new Error(streamErr || 'Празен отговор от модела');
+        if (streamErr) reply += '\n\n(Отговорът беше прекъснат: ' + streamErr + ')';
+      } else {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || (res.status === 413 ? 'Файловете са твърде големи за изпращане' : 'Грешка при заявката (' + res.status + ')'));
+        reply = data.reply;
+      }
+
+      s.messages.push({ role: 'assistant', content: reply });
       s.updated = Date.now();
       save();
       if (activeId === sid) {
         typing.remove();
-        els.messages.appendChild(row('assistant', data.reply));
+        const final = row('assistant', reply);
+        if (live) live.replaceWith(final); else els.messages.appendChild(final);
       }
     } catch (err) {
       if (activeId === sid) {
@@ -956,6 +1161,9 @@
     ['writer', 'Писател', 'Помага с имейли, есета и постове и ги редактира.', 'edit'],
     ['summarizer', 'Обобщител', 'Прави кратко резюме и ключови точки от дълги текстове.', 'library'],
     ['teacher', 'Учител', 'Обяснява стъпка по стъпка, с пример и въпрос за проверка.', 'sparkle'],
+    ['imageprompt', 'Промпт за картинки', 'Превръща описание в готов промпт за Midjourney или друг генератор на картинки.', 'image'],
+    ['designer', 'Дизайнер', 'Предлага палитри с цветове, стил, композиция и CSS код.', 'sparkle'],
+    ['reviewer', 'Ревизор', 'Преглежда код за грешки и рискове, преди да го пуснеш.', 'search'],
     ['analyst', 'Анализатор', 'Сравнява варианти, плюсове и минуси и дава препоръка.', 'sliders'],
   ];
 
@@ -1095,6 +1303,7 @@
     ({
       upgrade: () => toast('Плановете скоро ще бъдат достъпни'),
       personal: personalModal,
+      memory: memoryModal,
       profile: () => (account ? profileModal() : authModal('login')),
       settings: settingsModal,
       help: helpModal,
@@ -1145,6 +1354,67 @@
     });
   }
 
+  function addNote(raw) {
+    const t = String(raw || '').trim().slice(0, 300);
+    if (!t) return false;
+    if (state.notes.some((n) => n.text === t)) return true;
+    if (state.notes.length >= 40) { toast('Паметта е пълна (макс. 40 бележки). Изтрий някоя.'); return false; }
+    state.notes.push({ id: 'n' + Date.now() + Math.random().toString(36).slice(2, 5), text: t, ts: Date.now() });
+    save();
+    return true;
+  }
+
+  function memoryModal() {
+    const body = document.createElement('div');
+    const sub = document.createElement('p');
+    sub.className = 'sub';
+    sub.textContent = 'Бележките се пращат на TitanAI във всеки разговор, за да те познава. Можеш и да напишеш в чата „запомни: …“.';
+    const row1 = document.createElement('div');
+    row1.style.cssText = 'display:flex;gap:8px;margin-bottom:12px';
+    const inp = document.createElement('input');
+    inp.maxLength = 300;
+    inp.placeholder = 'Напр.: Работя като фризьор и пиша на „ти“';
+    const add = mkBtn('Добави', 'inline-btn', () => {
+      if (addNote(inp.value)) { inp.value = ''; draw(); }
+    });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add.click(); } });
+    row1.append(inp, add);
+    const list = document.createElement('div');
+    list.className = 'scroll';
+    body.append(sub, row1, list);
+
+    function draw() {
+      list.innerHTML = '';
+      if (!state.notes.length) {
+        const d = document.createElement('div');
+        d.className = 'empty-note';
+        d.textContent = 'Още няма бележки.';
+        list.append(d);
+        return;
+      }
+      state.notes.forEach((n) => {
+        const d = document.createElement('div');
+        d.className = 'item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const p = document.createElement('p');
+        p.style.marginTop = '0';
+        p.textContent = n.text;
+        info.append(p);
+        const btns = document.createElement('div');
+        btns.className = 'btns';
+        const del = document.createElement('button');
+        del.type = 'button'; del.title = 'Изтрий'; del.innerHTML = svg('trash');
+        del.addEventListener('click', () => { state.notes = state.notes.filter((x) => x.id !== n.id); save(); draw(); });
+        btns.append(del);
+        d.append(info, btns);
+        list.append(d);
+      });
+    }
+    modal('Памет', body, { cancel: 'Затвори', wide: true });
+    draw();
+  }
+
   function personalModal() {
     const ta = document.createElement('textarea');
     ta.rows = 6;
@@ -1186,6 +1456,7 @@
     modal('Помощ', textBlock(
       '<ul><li><b>Enter</b> — изпраща съобщението, <b>Shift+Enter</b> — нов ред.</li>' +
       '<li><b>+</b> — прикачва файл с код или текст, снимка или видео (може и с влачене или поставяне на снимка).</li>' +
+      '<li><b>Памет</b> (в менюто на профила) — бележки, които TitanAI помни; под всеки отговор има бутони за копиране, запазване и <b>запис като картинка</b>.</li>' +
       '<li><b>Плъгини</b> — включват специални умения; <b>Библиотека</b> — файловете и запазените отговори; <b>Разглеждане</b> — готови идеи.</li>' +
       '<li><b>Low / Medium / High</b> — колко подробен да е отговорът.</li>' +
       '<li><b>Chat / Work</b> — свободен разговор или работен режим.</li>' +
@@ -1298,6 +1569,7 @@
         state.sessions = remote.sessions;
         state.saved = Array.isArray(remote.saved) ? remote.saved : state.saved;
         state.plugins = Array.isArray(remote.plugins) ? remote.plugins : state.plugins;
+        state.notes = Array.isArray(remote.notes) ? remote.notes : state.notes;
         state.profile = { ...state.profile, ...(remote.profile || {}) };
         state.effort = remote.effort || state.effort;
         state.mode = remote.mode || state.mode;
